@@ -111,6 +111,39 @@ clawlink-agent search "your query" --port 8430
 | POST | `/group/should-respond` | Mention routing decision |
 | POST | `/group/fetch` | Pull group messages |
 
+## Extracted Essentials From Global Docs
+
+### Memory Schema Essentials
+
+Agent memory entries should keep these key fields consistent:
+
+- `id`: unique memory id
+- `topic`: knowledge title
+- `category`: patterns / corrections / observations / facts / procedures
+- `confidence`: score in range 0.0 to 1.0
+- `source`: taught / learned / corrected / observed
+- `sessionContext`: session id, mode, iteration, score
+
+### Confidence Update Rule
+
+Suggested blend rule for reinforcement:
+
+```text
+confidence_new = (confidence_old * 0.6) + (new_score * 0.4)
+```
+
+### Conflict Handling
+
+When new memory conflicts with existing memory on the same topic:
+
+1. compare confidence and score
+2. keep higher-confidence outcome as active knowledge
+3. keep correction record for traceability
+
+### Replay Queue Intent
+
+Replay queue is used for low-confidence or failed items and should be reviewed periodically.
+
 ## Device-Specific Notes
 
 - VS Code host PC: run with local memory path and keep service near IDE.
@@ -199,6 +232,37 @@ clawlink-agent stats --port 8430
 clawlink-agent list --port 8430
 clawlink-agent search "your query" --port 8430
 ```
+
+### 从全局 docs 提炼的记忆与教学关键点
+
+#### 记忆字段基线
+
+建议保持以下核心字段：
+
+- `id`：唯一记忆标识
+- `topic`：知识主题
+- `category`：patterns / corrections / observations / facts / procedures
+- `confidence`：0.0 到 1.0
+- `source`：taught / learned / corrected / observed
+- `sessionContext`：记录 session、mode、iteration、score
+
+#### 置信度更新建议
+
+```text
+confidence_new = (confidence_old * 0.6) + (new_score * 0.4)
+```
+
+#### 冲突处理原则
+
+同 topic 冲突时：
+
+1. 对比新旧 confidence/score
+2. 保留高置信内容为当前知识
+3. 保留 correction 记录以便追踪
+
+#### Replay 队列用途
+
+Replay 队列用于低置信度或失败项的复习与再学习。
 
 ### 防硬编码清单
 
