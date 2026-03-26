@@ -79,6 +79,90 @@ clawlink-agent search "your query" --port 8430
 | `stats` | Show runtime and memory info |
 | `replay-queue` | Show replay queue |
 | `pair --router-url URL` | Pair/register with Router |
+| `bootstrap-deps` | Verify and auto-install runtime Python dependencies |
+
+## Dependency Bootstrap
+
+If the runtime environment is incomplete, the CLI can self-heal missing Python dependencies.
+
+Check only:
+
+```bash
+clawlink-agent bootstrap-deps --check-only
+```
+
+Auto-install missing dependencies:
+
+```bash
+clawlink-agent bootstrap-deps
+```
+
+`serve`, `search`, `list`, `stats`, `replay-queue`, and `pair` also run dependency bootstrap automatically before importing their runtime modules.
+
+## Standalone Memory Automation Test
+
+Use this before integrating Router when you want to validate long-task memory continuity for a single agent.
+
+Run:
+
+```bash
+py scripts/standalone_memory_automation_test.py
+```
+
+Optional thresholds:
+
+```bash
+py scripts/standalone_memory_automation_test.py --phases 10 --recall-threshold 0.8 --latency-threshold-ms 500
+```
+
+Output JSON includes:
+
+- `recall_rate`: phase recall hit rate
+- `consistency`: top recall consistency across checkpoints
+- `avg_search_latency_ms`: average search latency
+- `passed`: final pass/fail verdict
+
+## Auto Capture and Noise Filtering
+
+`/message` now supports optional memory auto-capture with an importance filter.
+
+Default behavior is safe: auto-capture is disabled unless configured.
+
+Enable at runtime:
+
+```bash
+curl -X PUT http://localhost:8430/memory/config \
+  -H "Content-Type: application/json" \
+  -d '{"auto_memory_capture": true, "min_importance": 0.55}'
+```
+
+When enabled, each message can be evaluated for:
+
+- keyword extraction (`keywords` field)
+- importance scoring (decision/fix/policy signals)
+- duplicate suppression (avoid near-identical memory entries)
+
+Draft memories can also receive TTL so low-confidence short-lived notes naturally fall out of retrieval.
+
+Use the quality test:
+
+```bash
+py scripts/auto_capture_quality_test.py
+```
+
+## Merge and Decay Stabilization
+
+To keep retrieval quality stable when memory volume grows:
+
+- similar memories are automatically merged instead of growing one fragment per near-duplicate event
+- draft memories can expire through `ttl_days`
+- retrieval ranking applies recency decay with access-count bonus to keep useful memories near the top
+
+Run the regression test:
+
+```bash
+py scripts/memory_merge_decay_test.py
+```
 
 ### `serve` Options
 

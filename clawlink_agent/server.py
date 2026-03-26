@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -35,6 +36,9 @@ _state: Dict[str, Any] = {
     "memory_dir": "./memories",
     "router_url": "",
     "pairing_code": "",
+    "auto_memory_capture": False,
+    "min_importance": 0.55,
+    "draft_ttl_days": 30,
 }
 
 app = FastAPI(title="CLAWLINK-AGENT", version=__version__)
@@ -122,6 +126,9 @@ class SearchRequest(BaseModel):
 
 class ConfigUpdate(BaseModel):
     memory_dir: Optional[str] = None
+    auto_memory_capture: Optional[bool] = None
+    min_importance: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    draft_ttl_days: Optional[int] = Field(default=None, ge=1)
 
 
 class ReplayCompleteRequest(BaseModel):
@@ -138,6 +145,109 @@ class GroupFetchRequest(BaseModel):
     session_id: str
     agent_id: Optional[str] = None
     since: Optional[str] = None
+
+
+_TOKEN_RE = re.compile(r"[a-zA-Z0-9\u4e00-\u9fff_\-]+")
+_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "into", "then", "when", "have", "has",
+    "was", "were", "will", "would", "should", "could", "about", "your", "our", "their", "its",
+    "to", "of", "in", "on", "at", "as", "is", "are", "be", "by", "or", "an", "a",
+    "我们", "你们", "他们", "这个", "那个", "以及", "如果", "然后", "就是", "可以", "需要", "进行",
+    "一个", "一些", "没有", "因为", "所以", "但是", "并且", "或者", "的是", "了", "在", "和",
+}
+
+
+def _extract_keywords(text: str, limit: int = 8) -> List[str]:
+    tokens = [t.lower() for t in _TOKEN_RE.findall(text)]
+    cleaned: List[str] = []
+    for tok in tokens:
+        if len(tok) < 3:
+            continue
+        if tok in _STOPWORDS:
+            continue
+        if tok.isdigit():
+            continue
+        cleaned.append(tok)
+
+    seen: set[str] = set()
+    keywords: List[str] = []
+    for tok in cleaned:
+        if tok in seen:
+            continue
+        seen.add(tok)
+        keywords.append(tok)
+        if len(keywords) >= limit:
+            break
+    return keywords
+
+
+def _estimate_importance(content: str, keywords: List[str]) -> float:
+    text = content.lower()
+    score = 0.0
+
+    # Base signal from lexical richness.
+    if len(content) >= 120:
+        score += 0.20
+    if len(content) >= 240:
+        score += 0.10
+    if len(keywords) >= 4:
+        score += 0.20
+
+    # Decision / policy / fix language tends to be high-value memory.
+    decision_terms = [
+        "decide", "decision", "rule", "policy", "constraint", "fix", "solution",
+        "规范", "约束", "修复", "方案", "规则", "决定", "架构", "实现",
+    ]
+    if any(term in text for term in decision_terms):
+        score += 0.30
+
+    # Code/technical clues usually indicate actionable context.
+    technical_terms = ["api", "endpoint", "function", "class", "module", "bug", "phase", "测试", "部署"]
+    if any(term in text for term in technical_terms):
+        score += 0.20
+
+    return min(score, 1.0)
+
+
+def _is_duplicate_memory(store: MemoryStore, query: str, content: str) -> bool:
+    candidates = store.search(query, top_k=1)
+    if not candidates:
+        return False
+    existing = candidates[0]
+    existing_text = " ".join(existing.transcript_highlights).strip().lower()
+    new_text = content.strip().lower()
+    if not existing_text or not new_text:
+        return False
+    # Lightweight duplicate gate: if one contains the other, avoid writing a near-duplicate memory.
+    return existing_text in new_text or new_text in existing_text
+
+
+def _build_memory_from_message(msg: MessageIn, keywords: List[str], importance: float) -> MemoryEntry:
+    primary = keywords[0] if keywords else "conversation"
+    secondary = keywords[1] if len(keywords) > 1 else "note"
+    topic = f"{primary}-{secondary}-memory"
+
+    concepts = []
+    if keywords:
+        concepts.append(f"{primary}; capture decision context; {secondary}")
+
+    tags = keywords[:4]
+    return MemoryEntry(
+        topic=topic,
+        mode="chat",
+        teacher_id=msg.sender_id or "user",
+        student_id=_state["agent_id"],
+        strictness=0.5,
+        rubric="importance-filtered-memory",
+        score=importance,
+        confidence=max(0.50, importance),
+        concepts=concepts,
+        transcript_highlights=[msg.content[:800]],
+        status="passed" if importance >= 0.70 else "draft",
+        tags=tags,
+        keywords=keywords,
+        ttl_days=None if importance >= 0.70 else int(_state.get("draft_ttl_days", 30)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +272,9 @@ async def info() -> Dict[str, Any]:
         "memory_count": len(store.list_all()),
         "version": __version__,
         "pairing_code": _state.get("pairing_code", ""),
+        "auto_memory_capture": _state.get("auto_memory_capture", False),
+        "min_importance": _state.get("min_importance", 0.55),
+        "draft_ttl_days": _state.get("draft_ttl_days", 30),
     }
 
 
@@ -170,11 +283,40 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
     """Receive a message from the Router (teaching or group chat delivery)."""
     logger.info("Message from %s: %s", msg.sender_id, msg.content[:120])
     mentioned = group_rules.should_respond(msg.content, _state["agent_id"])
+
+    # Optional memory auto-capture: disabled by default, can be enabled globally
+    # in /memory/config or per-message with metadata.capture_memory=true.
+    capture_requested = bool(msg.metadata.get("capture_memory", False))
+    capture_enabled = bool(_state.get("auto_memory_capture", False)) or capture_requested
+    memory_id = ""
+    memory_captured = False
+    importance = 0.0
+    keywords: List[str] = []
+
+    if capture_enabled and msg.content.strip():
+        store = _get_store()
+        keywords = _extract_keywords(msg.content)
+        importance = _estimate_importance(msg.content, keywords)
+        min_importance = float(_state.get("min_importance", 0.55))
+        if importance >= min_importance and keywords:
+            query = " ".join(keywords[:4])
+            if not _is_duplicate_memory(store, query=query, content=msg.content):
+                entry = _build_memory_from_message(msg, keywords=keywords, importance=importance)
+                memory_id = store.save(entry)
+                memory_captured = True
+                triadic = _get_triadic()
+                for concept in entry.concepts:
+                    triadic.add_from_concept_string(concept, memory_id)
+
     return {
         "received": True,
         "agent_id": _state["agent_id"],
         "mentioned": mentioned,
         "content_length": len(msg.content),
+        "memory_captured": memory_captured,
+        "memory_id": memory_id,
+        "importance": round(importance, 3),
+        "keywords": keywords,
     }
 
 
@@ -284,7 +426,19 @@ async def memory_config(cfg: ConfigUpdate) -> Dict[str, str]:
     if cfg.memory_dir:
         _state["memory_dir"] = cfg.memory_dir
         _get_store().update_memory_dir(cfg.memory_dir)
-    return {"status": "updated", "memory_dir": _state["memory_dir"]}
+    if cfg.auto_memory_capture is not None:
+        _state["auto_memory_capture"] = bool(cfg.auto_memory_capture)
+    if cfg.min_importance is not None:
+        _state["min_importance"] = float(cfg.min_importance)
+    if cfg.draft_ttl_days is not None:
+        _state["draft_ttl_days"] = int(cfg.draft_ttl_days)
+    return {
+        "status": "updated",
+        "memory_dir": _state["memory_dir"],
+        "auto_memory_capture": str(_state["auto_memory_capture"]),
+        "min_importance": str(_state["min_importance"]),
+        "draft_ttl_days": str(_state["draft_ttl_days"]),
+    }
 
 
 # -- Registration ----------------------------------------------------------

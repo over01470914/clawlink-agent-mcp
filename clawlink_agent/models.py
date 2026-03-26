@@ -31,6 +31,8 @@ class MemoryEntry(BaseModel):
 
     id: str = Field(default_factory=_new_id, description="Unique memory ID")
     timestamp: str = Field(default_factory=_now_iso, description="ISO-8601 creation time")
+    last_accessed: str = Field(default_factory=_now_iso, description="Last access time")
+    access_count: int = Field(0, ge=0, description="Number of successful recalls")
     topic: str = Field(..., description="Memory topic")
     mode: str = Field("teach", description="Interaction mode (teach, review, quiz, chat)")
     teacher_id: str = Field("", description="ID of the teaching agent")
@@ -53,6 +55,19 @@ class MemoryEntry(BaseModel):
     )
     version: int = Field(1, ge=1, description="Version number")
     tags: List[str] = Field(default_factory=list, description="Free-form tags")
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="Normalized keywords used for retrieval and trigger matching",
+    )
+    ttl_days: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Optional time-to-live in days for low-value memories",
+    )
+    merged_from: List[str] = Field(
+        default_factory=list,
+        description="IDs of memory entries merged into this record",
+    )
     conflicts_with: List[str] = Field(
         default_factory=list, description="IDs of conflicting memories"
     )

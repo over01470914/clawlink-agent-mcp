@@ -203,6 +203,8 @@ TOOLS: List[Dict[str, Any]] = [
                 },
                 "status": {"type": "string", "default": "draft"},
                 "tags": {"type": "array", "items": {"type": "string"}},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "ttl_days": {"type": "integer", "minimum": 1},
             },
             "required": ["topic"],
         },

@@ -8,6 +8,8 @@ import logging
 import os
 import sys
 
+from .bootstrap import ensure_runtime_dependencies
+
 logger = logging.getLogger("clawlink_agent")
 
 
@@ -27,6 +29,11 @@ def _setup_logging(verbose: bool = False) -> None:
 
 def _cmd_serve(args: argparse.Namespace) -> None:
     """Start the agent HTTP server and register with Router."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import uvicorn
 
     from .server import app, configure, generate_pairing_code
@@ -53,6 +60,11 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 def _cmd_set_memory_dir(args: argparse.Namespace) -> None:
     """Update the memory directory via the running server."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import httpx
 
     url = f"http://localhost:{args.port}/memory/config"
@@ -67,6 +79,11 @@ def _cmd_set_memory_dir(args: argparse.Namespace) -> None:
 
 def _cmd_search(args: argparse.Namespace) -> None:
     """Search memories via the running server."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import httpx
 
     url = f"http://localhost:{args.port}/memory/search"
@@ -87,6 +104,11 @@ def _cmd_search(args: argparse.Namespace) -> None:
 
 def _cmd_list(args: argparse.Namespace) -> None:
     """List all memories via the running server."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import httpx
 
     url = f"http://localhost:{args.port}/memory/list"
@@ -108,6 +130,11 @@ def _cmd_list(args: argparse.Namespace) -> None:
 
 def _cmd_stats(args: argparse.Namespace) -> None:
     """Show memory statistics via the running server."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import httpx
 
     url = f"http://localhost:{args.port}/info"
@@ -122,6 +149,11 @@ def _cmd_stats(args: argparse.Namespace) -> None:
 
 def _cmd_replay_queue(args: argparse.Namespace) -> None:
     """Show the replay queue via the running server."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import httpx
 
     url = f"http://localhost:{args.port}/memory/replay/queue"
@@ -142,6 +174,11 @@ def _cmd_replay_queue(args: argparse.Namespace) -> None:
 
 def _cmd_pair(args: argparse.Namespace) -> None:
     """Register with Router and get a pairing code."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
     import httpx
 
     if not args.router_url:
@@ -163,6 +200,15 @@ def _cmd_pair(args: argparse.Namespace) -> None:
         code = f"{raw[:4]}-{raw[4:]}"
         print(f"  Generated Pairing Code: {code}")
         print("  (Note: agent server is not running; start with 'clawlink-agent serve' first)")
+
+
+def _cmd_bootstrap_deps(args: argparse.Namespace) -> None:
+    """Check and install missing runtime dependencies."""
+    missing = ensure_runtime_dependencies(auto_install=not args.check_only)
+    if missing:
+        print(json.dumps({"status": "missing", "modules": missing}, indent=2))
+        sys.exit(1)
+    print(json.dumps({"status": "ok", "message": "runtime dependencies are ready"}, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +260,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pair_p.add_argument("--router-url", default="", help="Router URL")
     pair_p.add_argument("--port", type=int, default=8430, help="Agent server port")
 
+    # bootstrap-deps
+    bootstrap_p = sub.add_parser("bootstrap-deps", help="Install or verify runtime dependencies")
+    bootstrap_p.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only check dependency availability without installing",
+    )
+
     return parser
 
 
@@ -229,6 +283,7 @@ _DISPATCH = {
     "stats": _cmd_stats,
     "replay-queue": _cmd_replay_queue,
     "pair": _cmd_pair,
+    "bootstrap-deps": _cmd_bootstrap_deps,
 }
 
 

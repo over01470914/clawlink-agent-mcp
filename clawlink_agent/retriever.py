@@ -30,6 +30,7 @@ def _entry_text(entry: MemoryEntry) -> str:
         entry.topic,
         entry.rubric,
         " ".join(entry.tags),
+        " ".join(entry.keywords),
         " ".join(entry.concepts),
         " ".join(entry.transcript_highlights),
     ]
