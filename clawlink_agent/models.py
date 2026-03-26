@@ -112,3 +112,27 @@ class GroupChatRule(BaseModel):
         ge=0,
         description="Auto-fetch interval in seconds (0 = disabled)",
     )
+
+
+class MemoryPackMetadata(BaseModel):
+    """Distribution metadata for a portable memory pack."""
+
+    pack_id: str = Field(..., description="Stable pack identifier")
+    name: str = Field(..., description="Display name for the pack")
+    version: str = Field(..., description="Pack semantic version")
+    author: str = Field(..., description="Pack author or publisher")
+    license: str = Field(..., description="License name, e.g. MIT")
+    tags: List[str] = Field(default_factory=list, description="Pack classification tags")
+    description: str = Field("", description="Optional pack description")
+    created_at: str = Field(default_factory=_now_iso, description="ISO-8601 pack creation time")
+
+
+class MemoryPack(BaseModel):
+    """Portable pack payload for memory distribution/import."""
+
+    pack_version: str = Field("1.0", description="Pack format version")
+    exported_at: str = Field(default_factory=_now_iso, description="ISO-8601 export timestamp")
+    memory_count: int = Field(0, ge=0, description="Number of memory entries in payload")
+    metadata: MemoryPackMetadata
+    memories: List[MemoryEntry] = Field(default_factory=list)
+    signature: str = Field("", description="SHA-256 integrity signature")

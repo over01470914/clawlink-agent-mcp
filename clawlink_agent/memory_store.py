@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import hashlib
 from difflib import SequenceMatcher
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
-from .models import MemoryEntry
+from .models import MemoryEntry, MemoryPack, MemoryPackMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,19 @@ def _parse_iso(value: str) -> datetime:
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _canonical_dumps(data: Any) -> str:
+    return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _pack_signature(pack_version: str, metadata: Dict[str, Any], memories: List[Dict[str, Any]]) -> str:
+    payload = {
+        "pack_version": pack_version,
+        "metadata": metadata,
+        "memories": memories,
+    }
+    return hashlib.sha256(_canonical_dumps(payload).encode("utf-8")).hexdigest()
 
 
 def _normalise_tokens(parts: List[str]) -> set[str]:
@@ -211,6 +226,118 @@ class MemoryStore:
                 path.unlink(missing_ok=True)
                 removed += 1
         return removed
+
+    def export_pack(
+        self,
+        include_drafts: bool = True,
+        min_score: float = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        include_signature: bool = True,
+    ) -> Dict[str, object]:
+        """Export memories into a portable JSON-compatible pack payload."""
+        memories: List[Dict[str, object]] = []
+        for entry in self.list_all():
+            if not include_drafts and entry.status == "draft":
+                continue
+            if entry.score < min_score:
+                continue
+            memories.append(entry.model_dump())
+
+        default_meta = {
+            "pack_id": f"pack-{_now_utc().strftime('%Y%m%d%H%M%S')}",
+            "name": "CLAWLINK Memory Pack",
+            "version": "1.0.0",
+            "author": "unknown",
+            "license": "proprietary",
+            "tags": ["memory"],
+        }
+        merged_meta = {**default_meta, **(metadata or {})}
+        meta = MemoryPackMetadata(**merged_meta).model_dump()
+        signature = _pack_signature("1.0", meta, memories) if include_signature else ""
+        pack = MemoryPack(
+            pack_version="1.0",
+            exported_at=_now_utc().isoformat(timespec="seconds").replace("+00:00", "Z"),
+            memory_count=len(memories),
+            metadata=MemoryPackMetadata(**meta),
+            memories=[MemoryEntry(**m) for m in memories],
+            signature=signature,
+        )
+        return pack.model_dump()
+
+    def import_pack(
+        self,
+        payload: Dict[str, object],
+        strict: bool = True,
+        allowed_licenses: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Import a portable memory pack payload."""
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+
+        validation_errors: List[str] = []
+        pack_version = str(payload.get("pack_version", ""))
+        if pack_version != "1.0":
+            validation_errors.append("unsupported pack_version; expected '1.0'")
+
+        metadata = payload.get("metadata")
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        if not metadata_dict:
+            validation_errors.append("missing metadata object")
+        else:
+            required_meta = ["pack_id", "name", "version", "author", "license", "created_at"]
+            for key in required_meta:
+                if not str(metadata_dict.get(key, "")).strip():
+                    validation_errors.append(f"metadata.{key} is required")
+
+        if allowed_licenses and metadata_dict:
+            license_name = str(metadata_dict.get("license", "")).strip()
+            if license_name and license_name not in set(allowed_licenses):
+                validation_errors.append(f"license '{license_name}' is not in allowed_licenses")
+
+        raw_memories = payload.get("memories", [])
+        if not isinstance(raw_memories, list):
+            raise ValueError("payload.memories must be a list")
+
+        signature = str(payload.get("signature", "") or "").strip()
+        if metadata_dict and signature:
+            expected = _pack_signature(pack_version or "1.0", metadata_dict, raw_memories)
+            if signature != expected:
+                validation_errors.append("pack signature verification failed")
+        elif strict:
+            validation_errors.append("missing signature in strict mode")
+
+        if strict and validation_errors:
+            raise ValueError("; ".join(validation_errors))
+
+        imported = 0
+        failed = 0
+        merged = 0
+        for item in raw_memories:
+            try:
+                if isinstance(item, str):
+                    item = json.loads(item)
+                if not isinstance(item, dict):
+                    failed += 1
+                    continue
+
+                before_ids = {e.id for e in self.list_all()}
+                entry = MemoryEntry(**item)
+                saved_id = self.save(entry)
+                after_ids = {e.id for e in self.list_all()}
+
+                imported += 1
+                if saved_id in before_ids or len(after_ids) == len(before_ids):
+                    merged += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+
+        return {
+            "imported": imported,
+            "failed": failed,
+            "merged_or_updated": merged,
+            "strict": strict,
+            "validation_errors": validation_errors,
+        }
 
     # -- stats ---------------------------------------------------------------
 

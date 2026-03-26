@@ -214,6 +214,71 @@ def _cmd_bootstrap_deps(args: argparse.Namespace) -> None:
     print(json.dumps({"status": "ok", "message": "runtime dependencies are ready"}, indent=2))
 
 
+def _cmd_export_pack(args: argparse.Namespace) -> None:
+    """Export memories as a portable pack JSON file."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+    import httpx
+
+    url = f"http://localhost:{args.port}/memory/pack/export"
+    params = {
+        "include_drafts": str(not bool(args.exclude_drafts)).lower(),
+        "min_score": args.min_score,
+        "pack_id": args.pack_id,
+        "name": args.name,
+        "version": args.version,
+        "author": args.author,
+        "license": args.license,
+        "tags": args.tags,
+        "description": args.description,
+        "include_signature": str(not bool(args.no_signature)).lower(),
+    }
+    try:
+        resp = httpx.get(url, params=params, timeout=10.0)
+        resp.raise_for_status()
+        data = resp.json()
+        with open(args.output, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+        print(json.dumps({"status": "exported", "output": os.path.abspath(args.output)}, indent=2))
+    except httpx.RequestError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_import_pack(args: argparse.Namespace) -> None:
+    """Import memories from a portable pack JSON file."""
+    missing = ensure_runtime_dependencies(auto_install=True)
+    if missing:
+        print(f"Error: missing dependencies after bootstrap: {', '.join(missing)}", file=sys.stderr)
+        sys.exit(1)
+
+    import httpx
+
+    if not os.path.exists(args.input):
+        print(f"Error: input file not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+
+    with open(args.input, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    url = f"http://localhost:{args.port}/memory/pack/import"
+    try:
+        body = {
+            "pack": payload,
+            "strict": not bool(args.non_strict),
+            "allowed_licenses": args.allow_license,
+        }
+        resp = httpx.post(url, json=body, timeout=20.0)
+        resp.raise_for_status()
+        print(json.dumps(resp.json(), indent=2))
+    except httpx.RequestError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -276,6 +341,50 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only check dependency availability without installing",
     )
 
+    # export-pack
+    export_p = sub.add_parser("export-pack", help="Export memories as a pack JSON file")
+    export_p.add_argument("--output", required=True, help="Output JSON file path")
+    export_p.add_argument("--port", type=int, default=8430, help="Agent server port")
+    export_p.add_argument("--pack-id", default="", help="Stable pack identifier")
+    export_p.add_argument("--name", default="", help="Pack display name")
+    export_p.add_argument("--version", default="1.0.0", help="Pack semantic version")
+    export_p.add_argument("--author", default="", help="Pack author or publisher")
+    export_p.add_argument("--license", default="proprietary", help="Pack license")
+    export_p.add_argument("--tags", default="", help="Comma-separated tags")
+    export_p.add_argument("--description", default="", help="Pack description")
+    export_p.add_argument(
+        "--exclude-drafts",
+        action="store_true",
+        help="Exclude draft memories from exported pack",
+    )
+    export_p.add_argument(
+        "--no-signature",
+        action="store_true",
+        help="Do not attach integrity signature to exported pack",
+    )
+    export_p.add_argument(
+        "--min-score",
+        type=float,
+        default=0.0,
+        help="Minimum score threshold for export",
+    )
+
+    # import-pack
+    import_p = sub.add_parser("import-pack", help="Import memories from a pack JSON file")
+    import_p.add_argument("--input", required=True, help="Input JSON file path")
+    import_p.add_argument("--port", type=int, default=8430, help="Agent server port")
+    import_p.add_argument(
+        "--non-strict",
+        action="store_true",
+        help="Allow best-effort import when pack metadata/signature validation fails",
+    )
+    import_p.add_argument(
+        "--allow-license",
+        action="append",
+        default=[],
+        help="Allowed license whitelist (repeatable)",
+    )
+
     return parser
 
 
@@ -292,6 +401,8 @@ _DISPATCH = {
     "replay-queue": _cmd_replay_queue,
     "pair": _cmd_pair,
     "bootstrap-deps": _cmd_bootstrap_deps,
+    "export-pack": _cmd_export_pack,
+    "import-pack": _cmd_import_pack,
 }
 
 

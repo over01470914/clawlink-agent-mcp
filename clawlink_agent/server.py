@@ -158,6 +158,12 @@ class ReplayCompleteRequest(BaseModel):
     memory_id: str
 
 
+class MemoryPackImportRequest(BaseModel):
+    pack: Dict[str, Any]
+    strict: bool = True
+    allowed_licenses: List[str] = Field(default_factory=list)
+
+
 class GroupShouldRespondRequest(BaseModel):
     content: str
     agent_id: Optional[str] = None
@@ -391,6 +397,57 @@ async def memory_list() -> List[Dict[str, Any]]:
     """List all memories."""
     store = _get_store()
     return [e.model_dump() for e in store.list_all()]
+
+
+@app.get("/memory/pack/export")
+async def memory_pack_export(
+    include_drafts: bool = True,
+    min_score: float = 0.0,
+    pack_id: str = "",
+    name: str = "",
+    version: str = "1.0.0",
+    author: str = "",
+    license: str = "proprietary",
+    tags: str = "",
+    description: str = "",
+    include_signature: bool = True,
+) -> Dict[str, Any]:
+    """Export memory entries into a portable JSON pack."""
+    store = _get_store()
+    tag_items = [t.strip() for t in tags.split(",") if t.strip()]
+    metadata = {
+        "pack_id": pack_id or f"{_state['agent_id']}-pack",
+        "name": name or f"{_state['display_name']} Memory Pack",
+        "version": version,
+        "author": author or _state["agent_id"],
+        "license": license,
+        "tags": tag_items,
+        "description": description,
+    }
+    pack = store.export_pack(
+        include_drafts=include_drafts,
+        min_score=min_score,
+        metadata=metadata,
+        include_signature=include_signature,
+    )
+    pack["agent_id"] = _state["agent_id"]
+    pack["display_name"] = _state["display_name"]
+    return pack
+
+
+@app.post("/memory/pack/import")
+async def memory_pack_import(req: MemoryPackImportRequest) -> Dict[str, Any]:
+    """Import memory entries from a portable JSON pack."""
+    store = _get_store()
+    try:
+        result = store.import_pack(
+            req.pack,
+            strict=req.strict,
+            allowed_licenses=req.allowed_licenses,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "imported", **result}
 
 
 @app.get("/memory/{memory_id}")

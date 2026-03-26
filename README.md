@@ -80,6 +80,8 @@ clawlink-agent search "your query" --port 8430
 | `replay-queue` | Show replay queue |
 | `pair --router-url URL` | Pair/register with Router |
 | `bootstrap-deps` | Verify and auto-install runtime Python dependencies |
+| `export-pack --output FILE` | Export a portable memory pack |
+| `import-pack --input FILE` | Import memories from a portable pack |
 
 ## Dependency Bootstrap
 
@@ -98,6 +100,49 @@ clawlink-agent bootstrap-deps
 ```
 
 `serve`, `search`, `list`, `stats`, `replay-queue`, and `pair` also run dependency bootstrap automatically before importing their runtime modules.
+
+## Memory Pack Metadata and Validation
+
+`export-pack` now supports distribution metadata and integrity signature so memory packs can be versioned and exchanged safely.
+
+Example export with product metadata:
+
+```bash
+clawlink-agent export-pack \
+  --port 8430 \
+  --output ./packs/python-retry-v1.json \
+  --pack-id com.clawlink.memory.python.retry \
+  --name "Python Retry Patterns" \
+  --version 1.0.0 \
+  --author "ClawLink Academy" \
+  --license MIT \
+  --tags "python,reliability,retry" \
+  --description "Retry and backoff operational memory pack"
+```
+
+Import defaults to strict validation (pack version, required metadata, signature).
+
+Strict import:
+
+```bash
+clawlink-agent import-pack --port 8430 --input ./packs/python-retry-v1.json
+```
+
+Best-effort import for legacy/tampered packs:
+
+```bash
+clawlink-agent import-pack --port 8430 --input ./packs/legacy.json --non-strict
+```
+
+License whitelist during import:
+
+```bash
+clawlink-agent import-pack \
+  --port 8430 \
+  --input ./packs/python-retry-v1.json \
+  --allow-license MIT \
+  --allow-license Apache-2.0
+```
 
 ## Router Compatibility Notes
 
@@ -131,6 +176,23 @@ Output JSON includes:
 - `consistency`: top recall consistency across checkpoints
 - `avg_search_latency_ms`: average search latency
 - `passed`: final pass/fail verdict
+
+## Router-Agent End-to-End Teaching Loop Test
+
+Use this script to verify full integration from Router registration to SOLO teaching loop completion and memory writeback.
+
+Run:
+
+```bash
+py scripts/router_agent_teaching_e2e_test.py
+```
+
+Output JSON includes:
+
+- registration result and latency
+- teaching loop iterations, score count, final score, and latency
+- memory counts and recall hits on both agents
+- `passed` for final acceptance
 
 ## Auto Capture and Noise Filtering
 
@@ -174,6 +236,12 @@ Run the regression test:
 py scripts/memory_merge_decay_test.py
 ```
 
+Run the pack round-trip test:
+
+```bash
+py scripts/memory_pack_roundtrip_test.py
+```
+
 ### `serve` Options
 
 | Flag | Default | Description |
@@ -196,6 +264,8 @@ py scripts/memory_merge_decay_test.py
 | POST | `/memory/search` | Memory search |
 | POST | `/memory/save` | Save memory |
 | GET | `/memory/list` | List memory |
+| GET | `/memory/pack/export` | Export memory pack |
+| POST | `/memory/pack/import` | Import memory pack |
 | GET | `/memory/{memory_id}` | Read memory |
 | DELETE | `/memory/{memory_id}` | Delete memory |
 | POST | `/memory/replay/add` | Add replay task |
@@ -327,6 +397,64 @@ curl http://localhost:8430/ping
 clawlink-agent stats --port 8430
 clawlink-agent list --port 8430
 clawlink-agent search "your query" --port 8430
+```
+
+### Router-Agent 端到端教学闭环测试
+
+该脚本会自动验证从 Agent 注册到 Router、创建 SOLO 会话、执行教学循环、到记忆回写的完整链路。
+
+运行：
+
+```bash
+py scripts/router_agent_teaching_e2e_test.py
+```
+
+输出 JSON 包含：
+
+- 注册结果与耗时
+- 教学循环轮次、评分次数、最终分数与耗时
+- 双 Agent 的记忆条目数与召回命中数
+- 最终 `passed` 验收结果
+
+### 记忆包元数据与导入校验
+
+`export-pack` 支持商品化元数据与完整性签名，方便版本化分发。
+
+导出示例：
+
+```bash
+clawlink-agent export-pack \
+  --port 8430 \
+  --output ./packs/python-retry-v1.json \
+  --pack-id com.clawlink.memory.python.retry \
+  --name "Python Retry Patterns" \
+  --version 1.0.0 \
+  --author "ClawLink Academy" \
+  --license MIT \
+  --tags "python,reliability,retry" \
+  --description "Retry and backoff operational memory pack"
+```
+
+导入默认严格校验（格式版本、必填元数据、签名）：
+
+```bash
+clawlink-agent import-pack --port 8430 --input ./packs/python-retry-v1.json
+```
+
+兼容旧包或历史包可用非严格模式：
+
+```bash
+clawlink-agent import-pack --port 8430 --input ./packs/legacy.json --non-strict
+```
+
+按 license 白名单导入：
+
+```bash
+clawlink-agent import-pack \
+  --port 8430 \
+  --input ./packs/python-retry-v1.json \
+  --allow-license MIT \
+  --allow-license Apache-2.0
 ```
 
 ### 从全局 docs 提炼的记忆与教学关键点
