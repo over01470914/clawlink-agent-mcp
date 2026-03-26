@@ -36,6 +36,8 @@ _state: Dict[str, Any] = {
     "memory_dir": "./memories",
     "router_url": "",
     "pairing_code": "",
+    "listen_port": 8430,
+    "public_endpoint": "",
     "auto_memory_capture": False,
     "min_importance": 0.55,
     "draft_ttl_days": 30,
@@ -85,6 +87,8 @@ def configure(
     display_name: str,
     memory_dir: str,
     router_url: str = "",
+    port: int = 8430,
+    public_endpoint: str = "",
 ) -> None:
     """Configure server state before starting."""
     global _store, _triadic, _replay, _conflict
@@ -92,6 +96,8 @@ def configure(
     _state["display_name"] = display_name
     _state["memory_dir"] = memory_dir
     _state["router_url"] = router_url
+    _state["listen_port"] = port
+    _state["public_endpoint"] = public_endpoint.strip()
     # Reset lazy singletons so they pick up new paths
     _store = None
     _triadic = None
@@ -105,6 +111,23 @@ def generate_pairing_code() -> str:
     code = f"{raw[:4]}-{raw[4:]}"
     _state["pairing_code"] = code
     return code
+
+
+def _agent_endpoint() -> str:
+    endpoint = str(_state.get("public_endpoint", "") or "").strip()
+    if endpoint:
+        return endpoint.rstrip("/")
+    return f"http://127.0.0.1:{int(_state.get('listen_port', 8430))}"
+
+
+def _summarise_recalled_memories(entries: List[MemoryEntry]) -> str:
+    if not entries:
+        return "No relevant memories recalled."
+    lines = ["Relevant memories recalled:"]
+    for entry in entries[:3]:
+        highlight = entry.transcript_highlights[0] if entry.transcript_highlights else entry.topic
+        lines.append(f"- {entry.topic}: {highlight[:160]}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +284,12 @@ async def ping() -> Dict[str, str]:
     return {"status": "ok", "agent_id": _state["agent_id"]}
 
 
+@app.get("/health")
+async def health() -> Dict[str, str]:
+    """Compatibility health endpoint expected by Router clients."""
+    return {"status": "ok", "agent_id": _state["agent_id"]}
+
+
 @app.get("/info")
 async def info() -> Dict[str, Any]:
     """Agent information."""
@@ -272,6 +301,7 @@ async def info() -> Dict[str, Any]:
         "memory_count": len(store.list_all()),
         "version": __version__,
         "pairing_code": _state.get("pairing_code", ""),
+        "endpoint": _agent_endpoint(),
         "auto_memory_capture": _state.get("auto_memory_capture", False),
         "min_importance": _state.get("min_importance", 0.55),
         "draft_ttl_days": _state.get("draft_ttl_days", 30),
@@ -292,6 +322,7 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
     memory_captured = False
     importance = 0.0
     keywords: List[str] = []
+    recalled_memories: List[MemoryEntry] = []
 
     if capture_enabled and msg.content.strip():
         store = _get_store()
@@ -308,6 +339,12 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
                 for concept in entry.concepts:
                     triadic.add_from_concept_string(concept, memory_id)
 
+    if msg.content.strip():
+        store = _get_store()
+        recall_query = " ".join(keywords[:4]) if keywords else msg.content[:120]
+        recalled_memories = store.search(recall_query, top_k=3)
+    response_text = _summarise_recalled_memories(recalled_memories)
+
     return {
         "received": True,
         "agent_id": _state["agent_id"],
@@ -317,6 +354,9 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
         "memory_id": memory_id,
         "importance": round(importance, 3),
         "keywords": keywords,
+        "recalled_memories": [e.model_dump() for e in recalled_memories],
+        "response": response_text,
+        "content": response_text,
     }
 
 
@@ -460,6 +500,12 @@ async def register_with_router(body: Dict[str, Any] | None = None) -> Dict[str, 
         "display_name": _state["display_name"],
         "version": __version__,
         "pairing_code": code,
+        "endpoint": _agent_endpoint(),
+        "agent_type": "local",
+        "metadata": {
+            "memory_dir": _state["memory_dir"],
+            "auto_memory_capture": _state.get("auto_memory_capture", False),
+        },
     }
 
     try:

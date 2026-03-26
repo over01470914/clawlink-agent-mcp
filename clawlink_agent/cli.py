@@ -43,6 +43,8 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         display_name=args.display_name,
         memory_dir=args.memory_dir,
         router_url=args.router_url,
+        port=args.port,
+        public_endpoint=args.public_endpoint,
     )
 
     code = generate_pairing_code()
@@ -51,6 +53,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     print(f"  Display Name: {args.display_name}")
     print(f"  Memory Dir  : {os.path.abspath(args.memory_dir)}")
     print(f"  Router URL  : {args.router_url or '(none)'}")
+    print(f"  Endpoint    : {args.public_endpoint or f'http://127.0.0.1:{args.port}'}")
     print(f"  Pairing Code: {code}")
     print(f"  Listening on: http://0.0.0.0:{args.port}")
     print()
@@ -231,6 +234,11 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_p.add_argument("--display-name", default="CLAWLINK Agent", help="Human-readable name")
     serve_p.add_argument("--memory-dir", default="./memories", help="Path to memory storage directory")
     serve_p.add_argument("--router-url", default="", help="Router URL (e.g. http://localhost:8420)")
+    serve_p.add_argument(
+        "--public-endpoint",
+        default="",
+        help="Endpoint Router should call back (default: http://127.0.0.1:<port>)",
+    )
 
     # set-memory-dir
     smd_p = sub.add_parser("set-memory-dir", help="Change the memory directory")

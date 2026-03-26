@@ -43,7 +43,7 @@ pip install -e .
 mkdir -p ./clawlink_memories
 ```
 
-2. Start the service
+1. Start the service
 
 ```bash
 clawlink-agent serve \
@@ -54,13 +54,13 @@ clawlink-agent serve \
   --router-url http://ROUTER_HOST:8420
 ```
 
-3. Check health
+1. Check health
 
 ```bash
 curl http://localhost:8430/ping
 ```
 
-4. Use CLI diagnostics
+1. Use CLI diagnostics
 
 ```bash
 clawlink-agent stats --port 8430
@@ -71,7 +71,7 @@ clawlink-agent search "your query" --port 8430
 ## CLI Commands
 
 | Command | Purpose |
-|---|---|
+| --- | --- |
 | `serve` | Start agent HTTP runtime |
 | `set-memory-dir PATH` | Switch memory storage directory |
 | `search QUERY` | Search memory entries |
@@ -98,6 +98,16 @@ clawlink-agent bootstrap-deps
 ```
 
 `serve`, `search`, `list`, `stats`, `replay-queue`, and `pair` also run dependency bootstrap automatically before importing their runtime modules.
+
+## Router Compatibility Notes
+
+For direct Router integration testing:
+
+1. start the agent with `--public-endpoint`
+2. run `clawlink-agent pair --router-url http://HOST:8420 --port <agent-port>`
+3. Router will register the agent through `/agents/register`
+
+`/message` also returns `response` and `content` fields containing recalled memory context so generic HTTP Router clients receive non-empty text.
 
 ## Standalone Memory Automation Test
 
@@ -167,18 +177,20 @@ py scripts/memory_merge_decay_test.py
 ### `serve` Options
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--port` | `8430` | Local listen port |
 | `--agent-id` | `agent-default` | Unique identifier |
 | `--display-name` | `CLAWLINK Agent` | UI display name |
 | `--memory-dir` | `./memories` | Local memory path |
 | `--router-url` | empty | Router endpoint |
+| `--public-endpoint` | `http://127.0.0.1:<port>` | Callback endpoint Router should call |
 
 ## HTTP Endpoints (Agent)
 
 | Method | Path | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | GET | `/ping` | Health check |
+| GET | `/health` | Router-compatible health check |
 | GET | `/info` | Runtime info |
 | POST | `/message` | Receive router message |
 | POST | `/memory/search` | Memory search |
@@ -292,7 +304,7 @@ pip install -e .
 mkdir -p ./clawlink_memories
 ```
 
-2. 启动服务
+1. 启动服务
 
 ```bash
 clawlink-agent serve \
@@ -303,13 +315,13 @@ clawlink-agent serve \
   --router-url http://ROUTER_HOST:8420
 ```
 
-3. 健康检查
+1. 健康检查
 
 ```bash
 curl http://localhost:8430/ping
 ```
 
-4. 运行诊断命令
+1. 运行诊断命令
 
 ```bash
 clawlink-agent stats --port 8430
