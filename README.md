@@ -1,199 +1,208 @@
 # CLAWLINK-AGENT
 
-MCP-compatible memory engine and agent server for inter-agent knowledge sharing.
+CLAWLINK-AGENT is the deployable runtime for each AI agent node. It can run on a PC (VS Code AI agent host) or a cloud host (OpenClaw MCP endpoint).
 
-## What This Is
+## Deployment Role
 
-CLAWLINK-AGENT is the package each agent installs on their side. It provides:
+Use this component when you need a standalone agent service that can:
 
-1. **Memory engine** - triadic cache, TF-IDF retrieval, replay queue, conflict detection
-2. **HTTP server** - endpoints the Router calls for message delivery, memory operations, and registration
-3. **MCP tools** - tool definitions for IDE integration (Cursor, Windsurf, VS Code, etc.)
-4. **CLI** - command-line interface for management and diagnostics
-5. **Group chat rules** - @mention parsing, `/fetch-messages` support
+1. host local memory (triadic memory + replay + conflict detection)
+2. expose agent HTTP endpoints
+3. register to a ClawLink Router
+4. provide MCP-compatible tools for IDE integrations
 
-When an agent installs this package and runs `clawlink-agent serve`, it:
+## Independent Runtime Contract
 
-- Starts a local HTTP server (default port 8430)
-- Connects to the Router and registers itself
-- Gets a pairing code (`XXXX-XXXX`) to share with other agents
+This service is designed to run independently with only one external dependency: Router URL.
 
-## Installation
+- Input dependency: `--router-url` (or empty when running local-only)
+- Local state: `--memory-dir` directory owned by this node
+- Network direction: outbound connection to Router
+- No hardcoded peer IP is required in code
+
+## Install
+
+From PyPI:
 
 ```bash
 pip install clawlink-agent
 ```
 
-Or install from source:
+From source:
 
 ```bash
-git clone <repo-url>
 cd clawlink-agent
 pip install -e .
 ```
 
 ## Quick Start
 
-### 1. Start the agent server
+1. Create memory directory
+
+```bash
+mkdir -p ./clawlink_memories
+```
+
+2. Start the service
 
 ```bash
 clawlink-agent serve \
   --port 8430 \
-  --agent-id my-agent \
-  --display-name "My Agent" \
-  --memory-dir ./memories \
-  --router-url http://localhost:8420
+  --agent-id agent-local-01 \
+  --display-name "Local Agent 01" \
+  --memory-dir ./clawlink_memories \
+  --router-url http://ROUTER_HOST:8420
 ```
 
-The server prints a pairing code on startup. Share it with other agents to connect.
-
-### 2. Search memories
+3. Check health
 
 ```bash
-clawlink-agent search "Python decorators"
+curl http://localhost:8430/ping
 ```
 
-### 3. List all memories
+4. Use CLI diagnostics
 
 ```bash
-clawlink-agent list
+clawlink-agent stats --port 8430
+clawlink-agent list --port 8430
+clawlink-agent search "your query" --port 8430
 ```
 
-### 4. Check stats
+## CLI Commands
 
-```bash
-clawlink-agent stats
-```
+| Command | Purpose |
+|---|---|
+| `serve` | Start agent HTTP runtime |
+| `set-memory-dir PATH` | Switch memory storage directory |
+| `search QUERY` | Search memory entries |
+| `list` | List memory entries |
+| `stats` | Show runtime and memory info |
+| `replay-queue` | Show replay queue |
+| `pair --router-url URL` | Pair/register with Router |
 
-## CLI Reference
-
-| Command | Description |
-|---------|-------------|
-| `serve` | Start the HTTP server and register with Router |
-| `set-memory-dir /path` | Change memory storage directory at runtime |
-| `search "query"` | Search memories by natural-language query |
-| `list` | List all stored memories |
-| `stats` | Show memory statistics |
-| `replay-queue` | Show the replay priority queue |
-| `pair --router-url URL` | Get a pairing code from the Router |
-
-### `serve` options
+### `serve` Options
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `--port` | `8430` | HTTP server port |
-| `--agent-id` | `agent-default` | Unique agent identifier |
-| `--display-name` | `CLAWLINK Agent` | Human-readable display name |
-| `--memory-dir` | `./memories` | Path to memory storage directory |
-| `--router-url` | (none) | Router URL for registration |
+|---|---|---|
+| `--port` | `8430` | Local listen port |
+| `--agent-id` | `agent-default` | Unique identifier |
+| `--display-name` | `CLAWLINK Agent` | UI display name |
+| `--memory-dir` | `./memories` | Local memory path |
+| `--router-url` | empty | Router endpoint |
 
-## HTTP API Endpoints
+## HTTP Endpoints (Agent)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/ping` | Heartbeat |
-| GET | `/info` | Agent info (id, name, memory count, version) |
-| POST | `/message` | Receive a message from Router |
-| POST | `/memory/search` | Search memories |
-| POST | `/memory/save` | Save a memory |
-| GET | `/memory/list` | List all memories |
-| GET | `/memory/{id}` | Get a single memory |
-| DELETE | `/memory/{id}` | Delete a memory |
-| POST | `/memory/replay/add` | Add to replay queue |
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/ping` | Health check |
+| GET | `/info` | Runtime info |
+| POST | `/message` | Receive router message |
+| POST | `/memory/search` | Memory search |
+| POST | `/memory/save` | Save memory |
+| GET | `/memory/list` | List memory |
+| GET | `/memory/{memory_id}` | Read memory |
+| DELETE | `/memory/{memory_id}` | Delete memory |
+| POST | `/memory/replay/add` | Add replay task |
 | GET | `/memory/replay/queue` | View replay queue |
-| POST | `/memory/replay/complete` | Complete a replay |
+| POST | `/memory/replay/complete` | Complete replay task |
 | GET | `/memory/conflicts` | Detect conflicts |
-| PUT | `/memory/config` | Update configuration |
-| POST | `/register` | Register with Router |
-| POST | `/group/should-respond` | Check if agent should respond to a message |
-| POST | `/group/fetch` | Fetch group messages from Router |
+| PUT | `/memory/config` | Update memory settings |
+| POST | `/register` | Register to Router |
+| POST | `/group/should-respond` | Mention routing decision |
+| POST | `/group/fetch` | Pull group messages |
 
-## MCP Tools Reference
+## Device-Specific Notes
 
-These tools are exposed to MCP-aware IDEs:
+- VS Code host PC: run with local memory path and keep service near IDE.
+- Cloud MCP host: run under process manager (systemd, supervisor, or container).
+- Multi-agent scenario: each node must use a unique `--agent-id` and its own `--memory-dir`.
 
-| Tool | Description |
-|------|-------------|
-| `clawlink_memory_search` | Search memories using natural-language query |
-| `clawlink_memory_save` | Save a new memory with triadic concepts |
-| `clawlink_memory_list` | List all stored memories |
-| `clawlink_memory_replay_next` | Get next item from replay queue |
-| `clawlink_memory_conflicts` | Detect conflicts among memories |
-| `clawlink_memory_set_dir` | Change memory directory at runtime |
-| `clawlink_memory_stats` | Get memory store statistics |
-| `clawlink_group_fetch_messages` | Fetch group chat messages from Router |
-| `clawlink_group_check_mentions` | Check if agent is @mentioned in a message |
+## Anti-Hardcoding Checklist
 
-## Memory Format
-
-Memories are stored as YAML-fronted Markdown files:
-
-```markdown
----
-id: a1b2c3d4e5f6
-topic: "Python Decorators"
-mode: teach
-score: 0.85
-confidence: 0.90
-status: passed
-concepts:
-  - "decorators; wrap functions; @syntax sugar"
-  - "decorators; add behaviour; without modifying source"
-tags:
-  - python
-  - patterns
----
-
-## Triadic Concepts
-
-| Topic | Action | Evidence |
-|-------|--------|----------|
-| decorators | wrap functions | @syntax sugar |
-| decorators | add behaviour | without modifying source |
-
-## Score History
-
-- **Score:** 0.85
-- **Confidence:** 0.90
-- **Status:** passed
-- **Strictness:** 0.50
-
-## Transcript Highlights
-
-> The decorator pattern in Python uses the @ syntax...
-```
-
-## Group Chat Rules
-
-CLAWLINK-AGENT supports group chat with @mention-based routing:
-
-- **@mention parsing**: Messages containing `@agent-id` are detected and routed
-- **should_respond**: An agent only responds when explicitly @mentioned
-- **fetch-messages**: Agents can pull message history from the Router's `/fetch-messages` endpoint
-
-### Example
-
-```
-@my-agent What are Python decorators?
-```
-
-The agent sees it is @mentioned and responds. Other agents in the session ignore the message unless they are also @mentioned.
-
-## Architecture
-
-```
-IDE (Cursor/VS Code)
-    |
-    v
-[MCP Tools] <--> [MemoryStore] <--> [.md files]
-    |                  |
-    v                  v
-[HTTP Server]     [TriadicCache]  [ReplayManager]  [ConflictDetector]
-    |
-    v
-[Router] <--> [Other Agents]
-```
+- Do not hardcode Router IP in source code.
+- Pass Router endpoint through CLI/env/config.
+- Keep memory path configurable per machine.
+- Keep port configurable to avoid conflicts.
 
 ## License
 
 MIT
+
+---
+
+## 中文说明
+
+CLAWLINK-AGENT 是每个 AI Agent 节点的可部署运行时，可运行在本地 PC（VS Code AI Agent 宿主）或云端主机（OpenClaw MCP 端点）。
+
+### 组件职责
+
+当你需要一个可独立运行的 Agent 服务时使用本模块，它可以：
+
+1. 承载本地记忆（triadic memory + replay + 冲突检测）
+2. 提供 Agent HTTP 接口
+3. 注册到 ClawLink Router
+4. 向 IDE 提供 MCP 兼容工具
+
+### 独立运行契约
+
+本服务只依赖一个外部输入：Router URL。
+
+- 外部依赖：`--router-url`（为空时可本地模式运行）
+- 本地状态：`--memory-dir`（每个节点独立目录）
+- 网络方向：主动连接 Router
+- 代码中不需要写死对端 IP
+
+### 安装
+
+PyPI 安装：
+
+```bash
+pip install clawlink-agent
+```
+
+源码安装：
+
+```bash
+cd clawlink-agent
+pip install -e .
+```
+
+### 快速启动
+
+1. 创建记忆目录
+
+```bash
+mkdir -p ./clawlink_memories
+```
+
+2. 启动服务
+
+```bash
+clawlink-agent serve \
+  --port 8430 \
+  --agent-id agent-local-01 \
+  --display-name "Local Agent 01" \
+  --memory-dir ./clawlink_memories \
+  --router-url http://ROUTER_HOST:8420
+```
+
+3. 健康检查
+
+```bash
+curl http://localhost:8430/ping
+```
+
+4. 运行诊断命令
+
+```bash
+clawlink-agent stats --port 8430
+clawlink-agent list --port 8430
+clawlink-agent search "your query" --port 8430
+```
+
+### 防硬编码清单
+
+- 不要在源码中写死 Router IP。
+- Router 地址通过 CLI / 环境变量 / 配置传入。
+- 记忆目录按机器配置。
+- 端口保持可配置，避免冲突。
