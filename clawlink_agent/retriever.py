@@ -16,29 +16,12 @@ logger = logging.getLogger(__name__)
 # Tokeniser
 # ---------------------------------------------------------------------------
 
-_TOKEN_RE = re.compile(r"[a-zA-Z0-9_\-]+|[\u4e00-\u9fff]+")
-_STOPWORDS = {
-    "the", "and", "for", "with", "that", "this", "from", "into", "then", "when", "have", "has",
-    "was", "were", "will", "would", "should", "could", "about", "your", "our", "their", "its",
-    "to", "of", "in", "on", "at", "as", "is", "are", "be", "by", "or", "an", "a",
-    "user", "agent", "users", "agents",
-    "我们", "你们", "他们", "这个", "那个", "以及", "如果", "然后", "就是", "可以", "需要", "进行",
-    "一个", "一些", "没有", "因为", "所以", "但是", "并且", "或者", "的是", "了", "在", "和",
-    "用户", "告诉", "agent", "请回答", "问题", "现在", "之前", "任务",
-}
+_TOKEN_RE = re.compile(r"[a-zA-Z0-9\u4e00-\u9fff]+")
 
 
 def _tokenise(text: str) -> List[str]:
     """Lowercase tokenisation; keeps CJK characters as single tokens."""
-    tokens: List[str] = []
-    for raw in _TOKEN_RE.findall(text):
-        tok = raw.lower().strip()
-        if len(tok) < 2:
-            continue
-        if tok in _STOPWORDS:
-            continue
-        tokens.append(tok)
-    return tokens
+    return [tok.lower() for tok in _TOKEN_RE.findall(text)]
 
 
 def _entry_text(entry: MemoryEntry) -> str:
@@ -103,14 +86,13 @@ class TFIDFRetriever:
             return []
 
         scores = self._tfidf_scores(q_tokens)
-        boosted_scores = self._apply_field_boosts(query, q_tokens, scores)
 
         # Fallback: if best TF-IDF score is 0 use keyword overlap
-        if max(boosted_scores) == 0.0:
-            boosted_scores = self._keyword_scores(q_tokens)
+        if max(scores) == 0.0:
+            scores = self._keyword_scores(q_tokens)
 
         ranked: List[Tuple[float, int]] = sorted(
-            ((s, i) for i, s in enumerate(boosted_scores)),
+            ((s, i) for i, s in enumerate(scores)),
             key=lambda x: x[0],
             reverse=True,
         )
@@ -143,35 +125,3 @@ class TFIDFRetriever:
             overlap = len(q_set & set(doc_tokens))
             scores.append(float(overlap))
         return scores
-
-    def _apply_field_boosts(self, query: str, q_tokens: List[str], base_scores: List[float]) -> List[float]:
-        """Boost matches in high-signal fields so recall favors concrete project facts over generic chat memory."""
-        query_lower = query.lower()
-        q_set = set(q_tokens)
-        boosted: List[float] = []
-
-        for index, entry in enumerate(self._entries):
-            score = base_scores[index]
-
-            topic_tokens = set(_tokenise(entry.topic))
-            keyword_tokens = set(_tokenise(" ".join(entry.keywords)))
-            tag_tokens = set(_tokenise(" ".join(entry.tags)))
-            concept_tokens = set(_tokenise(" ".join(entry.concepts)))
-
-            score += len(q_set & topic_tokens) * 4.0
-            score += len(q_set & keyword_tokens) * 3.0
-            score += len(q_set & tag_tokens) * 2.0
-            score += len(q_set & concept_tokens) * 1.5
-
-            topic_lower = entry.topic.lower()
-            if query_lower and query_lower in topic_lower:
-                score += 8.0
-
-            for phrase in [entry.topic, *entry.keywords[:4]]:
-                phrase_lower = phrase.lower().strip()
-                if phrase_lower and phrase_lower in query_lower:
-                    score += 5.0
-
-            boosted.append(score)
-
-        return boosted

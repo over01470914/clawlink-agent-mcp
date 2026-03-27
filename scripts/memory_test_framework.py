@@ -691,44 +691,8 @@ class BenchmarkScorer:
             }
         }
 
-    def _is_non_answer(self, response: str) -> bool:
-        """Detect empty or placeholder responses that should receive zero score."""
-        text = (response or "").strip()
-        if not text:
-            return True
-
-        lowered = text.lower()
-        placeholder_signals = [
-            "no relevant memories recalled",
-            "relevant memories recalled:",
-            "memory recall",
-            "no response",
-        ]
-        if any(sig in lowered for sig in placeholder_signals):
-            # Pure recall summary without concrete answer should be treated as non-answer.
-            answer_cues = ["1)", "2)", "步骤", "建议", "使用", "实现", "可以", "应该"]
-            if not any(cue in text for cue in answer_cues):
-                return True
-
-        return False
-
     def score_management_test(self, response: str, test_case: TestCase) -> Dict[str, Any]:
         """评分管理测试"""
-        if self._is_non_answer(response):
-            return {
-                'total_score': 0.0,
-                'component_scores': {
-                    'delegation': 0.0,
-                    'task_breakdown': 0.0,
-                    'constraint_following': 0.0,
-                },
-                'details': {
-                    'no_response': True,
-                    'reason': 'empty_or_placeholder_response',
-                },
-                'passed': False
-            }
-
         scores = {}
         details = {}
 
@@ -764,21 +728,6 @@ class BenchmarkScorer:
 
     def score_logic_test(self, response: str, test_case: TestCase) -> Dict[str, Any]:
         """评分逻辑执行测试"""
-        if self._is_non_answer(response):
-            return {
-                'total_score': 0.0,
-                'component_scores': {
-                    'framework_usage': 0.0,
-                    'anti_pattern_avoidance': 0.0,
-                    'architecture_quality': 0.0,
-                },
-                'details': {
-                    'no_response': True,
-                    'reason': 'empty_or_placeholder_response',
-                },
-                'passed': False
-            }
-
         scores = {}
         details = {}
 
@@ -818,21 +767,6 @@ class BenchmarkScorer:
 
     def score_user_habit_test(self, response: str, test_case: TestCase, memory_recalled: List[str] = None) -> Dict[str, Any]:
         """评分用户习惯测试"""
-        if self._is_non_answer(response):
-            return {
-                'total_score': 0.0,
-                'component_scores': {
-                    'memory_recall': 0.0,
-                    'preference_application': 0.0,
-                    'consistency': 0.0,
-                },
-                'details': {
-                    'no_response': True,
-                    'reason': 'empty_or_placeholder_response',
-                },
-                'passed': False
-            }
-
         scores = {}
         details = {}
 

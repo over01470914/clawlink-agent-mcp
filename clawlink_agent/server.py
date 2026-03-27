@@ -130,114 +130,6 @@ def _summarise_recalled_memories(entries: List[MemoryEntry]) -> str:
     return "\n".join(lines)
 
 
-def _extract_question_text(content: str) -> str:
-    text = (content or "").strip()
-    if not text:
-        return ""
-
-    markers = ["现在请回答:", "【问题】"]
-    for marker in markers:
-        idx = text.rfind(marker)
-        if idx >= 0:
-            return text[idx + len(marker):].strip()
-
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return lines[-1] if lines else text
-
-
-def _extract_frameworks_from_text(content: str) -> List[str]:
-    known = [
-        "FastAPI", "Pydantic", "SQLAlchemy", "Alembic", "Celery", "Redis",
-        "Docker", "docker-compose", "pytest", "pytest-asyncio", "JWT", "DRF",
-    ]
-    found: List[str] = []
-    lowered = (content or "").lower()
-    for fw in known:
-        if fw.lower() in lowered:
-            found.append(fw)
-    return found
-
-
-def _build_management_answer(question: str) -> str:
-    return (
-        f"针对问题“{question}”，我会只做协调与委派，不直接执行：\n"
-        "1) 任务拆解：将目标拆为需求澄清、执行实施、结果验收三个子任务。\n"
-        "2) 委派执行：指定对应负责人分别执行，每个子任务明确交付物和截止时间。\n"
-        "3) 约束遵循：我仅跟踪进度与风险升级，不亲自编写代码/文档/脚本。\n"
-        "4) 闭环验收：收集各执行者产出，按标准统一评审并反馈下一步。"
-    )
-
-
-def _build_logic_answer(question: str, content: str) -> str:
-    frameworks = _extract_frameworks_from_text(content)
-    framework_text = " + ".join(frameworks[:3]) if frameworks else "FastAPI + Pydantic"
-    return (
-        f"针对问题“{question}”，建议采用 {framework_text} 的分层实现方案：\n"
-        "1) 接口层：使用成熟框架定义 API 与输入验证，避免手写校验分支。\n"
-        "2) 业务层：将核心逻辑放入独立 service 模块，保持模块分离与解耦。\n"
-        "3) 数据层：通过 ORM/迁移工具管理模型和变更，禁止硬编码连接与魔法值。\n"
-        "4) 质量层：补充 pytest 测试与配置化参数，确保可测试、可扩展、可维护。"
-    )
-
-
-def _build_habit_answer(question: str, content: str) -> str:
-    text = (content or "").lower()
-    prefix = "根据您之前的偏好，我会按一致风格回答。"
-
-    if "markdown" in text or "代码块" in content:
-        return (
-            f"{prefix}\n\n"
-            f"问题：{question}\n\n"
-            "建议方案：\n"
-            "```python\n"
-            "def solve():\n"
-            "    return \"按用户偏好给出简洁可执行方案\"\n"
-            "```"
-        )
-
-    if "linux" in text:
-        return (
-            f"{prefix}\n"
-            f"问题：{question}\n"
-            "执行命令（Linux）：\n"
-            "- chmod +x ./run.sh\n"
-            "- ./run.sh"
-        )
-
-    if "简洁" in content:
-        return f"{prefix} 问题：{question}。回答将保持简洁直达，只给最小可执行步骤。"
-
-    return f"{prefix} 问题：{question}。我会先回忆已知习惯，再给出匹配偏好的实现建议。"
-
-
-def _generate_response_text(msg: MessageIn, recalled: List[MemoryEntry]) -> str:
-    """Generate a deterministic answer so /message returns actionable content."""
-    content = (msg.content or "").strip()
-    question = _extract_question_text(content)
-    lowered = content.lower()
-
-    management_signals = ["管理者", "委派", "分配任务", "不能自己", "协调者", "项目经理"]
-    logic_signals = [
-        "框架", "fastapi", "pydantic", "sqlalchemy", "alembic", "celery", "redis", "docker", "pytest", "jwt", "drf",
-    ]
-    habit_signals = ["第一轮", "第二轮", "偏好", "习惯", "根据之前", "用户说"]
-
-    if any(sig in content for sig in management_signals):
-        return _build_management_answer(question or "当前任务")
-
-    if any(sig in lowered for sig in logic_signals):
-        return _build_logic_answer(question or "当前任务", content)
-
-    if any(sig in content for sig in habit_signals):
-        return _build_habit_answer(question or "当前任务", content)
-
-    if recalled:
-        hint = recalled[0].topic
-        return f"针对问题“{question or '当前任务'}”，我建议优先参考已召回记忆主题：{hint}，并给出分步骤执行计划。"
-
-    return f"针对问题“{question or '当前任务'}”，我建议先明确目标、约束和交付物，再按步骤执行并验证结果。"
-
-
 # ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
@@ -253,12 +145,6 @@ class MessageIn(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 5
-
-
-class BriefRequest(BaseModel):
-    query: str
-    top_k: int = 3
-    max_chars: int = Field(default=1200, ge=200, le=4000)
 
 
 class ConfigUpdate(BaseModel):
@@ -443,7 +329,6 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
     importance = 0.0
     keywords: List[str] = []
     recalled_memories: List[MemoryEntry] = []
-    recall_enabled = bool(msg.metadata.get("use_memory_recall", True))
 
     if capture_enabled and msg.content.strip():
         store = _get_store()
@@ -460,12 +345,11 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
                 for concept in entry.concepts:
                     triadic.add_from_concept_string(concept, memory_id)
 
-    if msg.content.strip() and recall_enabled:
+    if msg.content.strip():
         store = _get_store()
         recall_query = " ".join(keywords[:4]) if keywords else msg.content[:120]
         recalled_memories = store.search(recall_query, top_k=3)
-    answer_text = _generate_response_text(msg, recalled_memories)
-    recall_text = _summarise_recalled_memories(recalled_memories)
+    response_text = _summarise_recalled_memories(recalled_memories)
 
     return {
         "received": True,
@@ -476,11 +360,9 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
         "memory_id": memory_id,
         "importance": round(importance, 3),
         "keywords": keywords,
-        "recall_enabled": recall_enabled,
         "recalled_memories": [e.model_dump() for e in recalled_memories],
-        "response": answer_text,
-        "content": answer_text,
-        "memory_summary": recall_text,
+        "response": response_text,
+        "content": response_text,
     }
 
 
@@ -493,13 +375,6 @@ async def memory_search(req: SearchRequest) -> List[Dict[str, Any]]:
     store = _get_store()
     results = store.search(req.query, top_k=req.top_k)
     return [r.model_dump() for r in results]
-
-
-@app.post("/memory/brief")
-async def memory_brief(req: BriefRequest) -> Dict[str, Any]:
-    """Return a concise memory briefing optimised for agent reasoning."""
-    store = _get_store()
-    return store.build_brief(query=req.query, top_k=req.top_k, max_chars=req.max_chars)
 
 
 @app.post("/memory/save")
