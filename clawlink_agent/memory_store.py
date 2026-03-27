@@ -22,10 +22,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_TRANSCRIPT_SECTION_RE = re.compile(
-    r"^##\s+Transcript Highlights\s*$\n?(.*?)(?=^##\s+|\Z)",
-    re.DOTALL | re.MULTILINE,
-)
+_SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _parse_iso(value: str) -> datetime:
@@ -50,6 +47,18 @@ def _clean_brief_text(text: str) -> str:
     cleaned = re.sub(r"- \*\*[^*]+\*\*:\s*", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _extract_section(body: str, section_name: str) -> str:
+    start_match = re.search(rf"^##\s+{re.escape(section_name)}\s*$", body, re.MULTILINE)
+    if not start_match:
+        return ""
+    start = start_match.end()
+    remaining = body[start:]
+    next_match = _SECTION_RE.search(remaining)
+    if next_match:
+        remaining = remaining[:next_match.start()]
+    return remaining.strip()
 
 
 def _clean_transcript_highlight(text: str) -> str:
@@ -81,11 +90,10 @@ def _clean_transcript_highlight(text: str) -> str:
 
 def _extract_transcript_highlights(body: str) -> List[str]:
     """Extract only the Transcript Highlights section instead of ingesting the whole markdown body."""
-    match = _TRANSCRIPT_SECTION_RE.search(body or "")
-    if not match:
+    section = _extract_section(body, "Transcript Highlights")
+    if not section:
         return []
 
-    section = match.group(1)
     highlights: List[str] = []
     current_lines: List[str] = []
 
@@ -141,7 +149,8 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 
 
 def _phase_marker(entry: MemoryEntry) -> Optional[str]:
-    combined = " ".join([entry.topic, *entry.tags, *entry.keywords]).lower()
+    fact_values = [value for values in entry.facts.values() for value in values]
+    combined = " ".join([entry.topic, *entry.tags, *entry.keywords, *fact_values]).lower()
     match = re.search(r"phase[_\-]?(\d+)", combined)
     if match:
         return match.group(1)
@@ -168,9 +177,10 @@ def _parse_md(path: Path) -> Optional[MemoryEntry]:
         return None
 
     body = text[match.end():].strip()
-    parsed_highlights = _extract_transcript_highlights(body)
-    if parsed_highlights:
-        meta["transcript_highlights"] = parsed_highlights
+    highlights = _extract_transcript_highlights(body)
+    if highlights:
+        existing = meta.get("transcript_highlights", [])
+        meta["transcript_highlights"] = list(dict.fromkeys([*existing, *highlights]))
     else:
         meta.setdefault("transcript_highlights", [])
 
@@ -194,10 +204,14 @@ class MemoryStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._merge_similarity_threshold = 0.55
         self._decay_half_life_days = 45.0
+        self._entries_cache: Optional[List[MemoryEntry]] = None
+        self._retriever = None
         self._search_cache: Dict[tuple[str, int], List[str]] = {}
         logger.info("MemoryStore initialised at %s", self._dir)
 
     def _invalidate_cache(self) -> None:
+        self._entries_cache = None
+        self._retriever = None
         self._search_cache.clear()
 
     # -- persistence ---------------------------------------------------------
@@ -234,11 +248,15 @@ class MemoryStore:
 
     def list_all(self) -> List[MemoryEntry]:
         """Return every memory in the store."""
+        if self._entries_cache is not None:
+            return self._entries_cache
+
         entries: List[MemoryEntry] = []
         for path in sorted(self._dir.glob("*.md")):
             entry = _parse_md(path)
             if entry is not None and not self._is_expired(entry):
                 entries.append(entry)
+        self._entries_cache = entries
         return entries
 
     def delete(self, memory_id: str) -> bool:
@@ -258,20 +276,22 @@ class MemoryStore:
         """Search memories by query string using TF-IDF with keyword fallback."""
         from .retriever import TFIDFRetriever  # late import
 
-        cache_key = (query.strip().lower(), int(top_k))
+        cache_key = (query.strip().lower(), top_k)
         cached_ids = self._search_cache.get(cache_key)
-        if cached_ids:
-            id_map = {entry.id: entry for entry in self.list_all()}
-            cached_results = [id_map[mid] for mid in cached_ids if mid in id_map]
-            if cached_results:
-                for entry in cached_results:
-                    self._touch(entry)
-                return cached_results[:top_k]
-
         all_entries = self.list_all()
         if not all_entries:
             return []
-        retriever = TFIDFRetriever(all_entries)
+
+        if cached_ids is not None:
+            id_map = {entry.id: entry for entry in all_entries}
+            cached_results = [id_map[entry_id] for entry_id in cached_ids if entry_id in id_map]
+            for entry in cached_results:
+                self._touch(entry, persist=False)
+            return cached_results
+
+        if self._retriever is None:
+            self._retriever = TFIDFRetriever(all_entries)
+        retriever = self._retriever
         ranked = retriever.search(query, top_k=max(top_k * 3, top_k))
         ranked = sorted(
             ranked,
@@ -281,60 +301,52 @@ class MemoryStore:
         results = ranked[:top_k]
         self._search_cache[cache_key] = [entry.id for entry in results]
         for entry in results:
-            self._touch(entry)
+            self._touch(entry, persist=False)
         return results
 
-    def build_brief(self, query: str, top_k: int = 3, max_chars: int = 1200) -> Dict[str, Any]:
-        """Return a concise memory briefing optimised for LLM reasoning, not raw storage inspection."""
-        results = self.search(query, top_k=top_k)
-        items: List[Dict[str, Any]] = []
+    def build_brief(self, query: str, top_k: int = 3) -> Dict[str, Any]:
+        """Build a concise recall packet for agent reasoning."""
+        entries = self.search(query, top_k=top_k)
+        facts: Dict[str, List[str]] = {}
+        highlights: List[str] = []
+        topics: List[str] = []
+
+        for entry in entries:
+            topics.append(entry.topic)
+            for key, values in entry.facts.items():
+                bucket = facts.setdefault(key, [])
+                for value in values:
+                    if value and value not in bucket:
+                        bucket.append(value)
+            for highlight in entry.transcript_highlights:
+                cleaned = _clean_transcript_highlight(highlight)
+                if cleaned and cleaned not in highlights:
+                    highlights.append(cleaned[:220])
+                if len(highlights) >= 3:
+                    break
+
         lines: List[str] = []
+        if facts:
+            lines.append("Recalled facts:")
+            for key, values in facts.items():
+                lines.append(f"- {key}: {', '.join(values[:4])}")
+        elif topics:
+            lines.append("Recalled topics:")
+            for topic in topics[:3]:
+                lines.append(f"- {topic}")
 
-        for entry in results:
-            concepts = []
-            for concept in entry.concepts[:2]:
-                parts = [part.strip() for part in concept.split(";")]
-                if len(parts) >= 3:
-                    concepts.append({
-                        "topic": parts[0],
-                        "action": parts[1],
-                        "evidence": parts[2],
-                    })
-
-            fact_parts: List[str] = []
-            for concept in concepts:
-                fact_parts.append(f"{concept['topic']} -> {concept['action']} -> {concept['evidence']}")
-
-            if not fact_parts and entry.transcript_highlights:
-                fact_parts.append(_clean_brief_text(entry.transcript_highlights[0]))
-
-            highlight = " ; ".join(part for part in fact_parts if part).strip()
-            if len(highlight) > 220:
-                highlight = highlight[:220].rstrip() + "..."
-
-            items.append({
-                "id": entry.id,
-                "topic": entry.topic,
-                "confidence": entry.confidence,
-                "score": entry.score,
-                "keywords": entry.keywords[:6],
-                "concepts": concepts,
-                "facts": fact_parts[:3],
-                "highlight": highlight,
-            })
-
-            summary_line = f"- {entry.topic} | confidence={entry.confidence:.2f} | {highlight or 'no-highlight'}"
-            lines.append(summary_line)
-
-        brief_text = "\n".join(lines)
-        if len(brief_text) > max_chars:
-            brief_text = brief_text[:max_chars].rstrip() + "..."
+        if highlights and not facts:
+            lines.append("Highlights:")
+            for highlight in highlights[:2]:
+                lines.append(f"- {highlight}")
 
         return {
             "query": query,
-            "count": len(items),
-            "items": items,
-            "brief_text": brief_text,
+            "count": len(entries),
+            "topics": topics,
+            "facts": facts,
+            "highlights": highlights,
+            "brief_text": "\n".join(lines) if lines else "No relevant memories recalled.",
         }
 
     def search_by_topic(self, topic: str) -> List[MemoryEntry]:
@@ -372,6 +384,8 @@ class MemoryStore:
             if self._is_expired(entry):
                 path.unlink(missing_ok=True)
                 removed += 1
+        if removed:
+            self._invalidate_cache()
         return removed
 
     def export_pack(
@@ -508,7 +522,13 @@ class MemoryStore:
 
     def _find_merge_candidate(self, entry: MemoryEntry) -> Optional[MemoryEntry]:
         new_tokens = _normalise_tokens(
-            [entry.topic, " ".join(entry.tags), " ".join(entry.keywords), " ".join(entry.concepts)]
+            [
+                entry.topic,
+                " ".join(entry.tags),
+                " ".join(entry.keywords),
+                " ".join(entry.concepts),
+                " ".join(value for values in entry.facts.values() for value in values),
+            ]
         )
         best_match: Optional[MemoryEntry] = None
         best_score = 0.0
@@ -524,6 +544,7 @@ class MemoryStore:
                     " ".join(existing.tags),
                     " ".join(existing.keywords),
                     " ".join(existing.concepts),
+                    " ".join(value for values in existing.facts.values() for value in values),
                 ]
             )
             token_similarity = _jaccard(new_tokens, existing_tokens)
@@ -546,6 +567,13 @@ class MemoryStore:
         merged_tags = list(dict.fromkeys([*existing.tags, *new_entry.tags]))
         merged_keywords = list(dict.fromkeys([*existing.keywords, *new_entry.keywords]))
         merged_concepts = list(dict.fromkeys([*existing.concepts, *new_entry.concepts]))
+        merged_facts: Dict[str, List[str]] = {}
+        for source in (existing.facts, new_entry.facts):
+            for key, values in source.items():
+                bucket = merged_facts.setdefault(key, [])
+                for value in values:
+                    if value not in bucket:
+                        bucket.append(value)
         merged_highlights = list(
             dict.fromkeys([*existing.transcript_highlights, *new_entry.transcript_highlights])
         )[-8:]
@@ -556,6 +584,7 @@ class MemoryStore:
         existing.tags = merged_tags
         existing.keywords = merged_keywords
         existing.concepts = merged_concepts
+        existing.facts = merged_facts
         existing.transcript_highlights = merged_highlights
         existing.conflicts_with = merged_conflicts
         existing.merged_from = merged_ids
@@ -580,9 +609,11 @@ class MemoryStore:
         access_bonus = min(entry.access_count, 10) * 0.03
         return (entry.confidence * decay) + access_bonus
 
-    def _touch(self, entry: MemoryEntry) -> None:
+    def _touch(self, entry: MemoryEntry, *, persist: bool = True) -> None:
         entry.access_count += 1
         entry.last_accessed = _now_utc().isoformat(timespec="seconds").replace("+00:00", "Z")
+        if not persist:
+            return
         from .generator import MemoryFileGenerator  # late import to avoid circular
 
         path = self._dir / f"{entry.id}.md"

@@ -170,6 +170,44 @@ python scripts/memory_qa_collector.py \
 python scripts/memory_test_scenarios.py
 ```
 
+### 运行 10 轮长程记忆回归
+```bash
+python scripts/app_scenario_regression.py \
+    --agent-url http://127.0.0.1:8430 \
+    --output regression.json
+```
+
+推荐检查项：
+- `evaluation.score`
+- `evaluation.correct_count`
+- `final_memory_brief.facts`
+
+当前 fresh 基线：
+- `fresh_facts_scenario_v7/regression.json`
+- `score = 100.0`
+- `correct_count = 9`
+
+### 运行 memory-on vs memory-off A/B 回归
+```bash
+python scripts/app_scenario_ab_regression.py \
+    --agent-url http://127.0.0.1:8430 \
+    --output ab_regression.json
+```
+
+推荐检查项：
+- `summary.avg_score_with_memory`
+- `summary.avg_score_without_memory`
+- `summary.avg_score_delta`
+- `summary.avg_latency_with_memory_ms`
+- `summary.avg_latency_without_memory_ms`
+- `summary.avg_latency_delta_ms`
+
+当前 fresh 基线：
+- `ab_facts_scenario_v2/ab_regression.json`
+- `avg_score_delta = 91.67`
+- `avg_latency_delta_ms = 0.75`
+- `memory_helped_probes = 3`
+
 ---
 
 ## 评分系统

@@ -31,13 +31,12 @@ class MCPStdioBridge:
             },
             {
                 "name": "clawlink_memory_brief",
-                "description": "Fetch concise memory context for the current task so the agent can reason faster with less MCP noise.",
+                "description": "Build a concise memory brief with aggregated structured facts for reasoning.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Task or question to retrieve memory context for"},
-                        "top_k": {"type": "integer", "description": "Max memory items", "default": 3},
-                        "max_chars": {"type": "integer", "description": "Max chars in brief_text", "default": 1200},
+                        "query": {"type": "string", "description": "Recall query"},
+                        "top_k": {"type": "integer", "description": "Max memories to aggregate", "default": 3},
                     },
                     "required": ["query"],
                 },
@@ -68,6 +67,13 @@ class MCPStdioBridge:
                         "status": {"type": "string", "default": "draft"},
                         "tags": {"type": "array", "items": {"type": "string"}},
                         "keywords": {"type": "array", "items": {"type": "string"}},
+                        "facts": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
                         "ttl_days": {"type": "integer", "minimum": 1},
                     },
                     "required": ["topic"],
@@ -237,11 +243,7 @@ Agent 已准备好接收任务。你可以：
             result = await self._call_http_api(
                 "/memory/brief",
                 method="POST",
-                data={
-                    "query": arguments.get("query", ""),
-                    "top_k": arguments.get("top_k", 3),
-                    "max_chars": arguments.get("max_chars", 1200),
-                }
+                data={"query": arguments.get("query", ""), "top_k": arguments.get("top_k", 3)}
             )
             return json.dumps(result, indent=2, ensure_ascii=False)
 

@@ -163,13 +163,67 @@ clawlink-agent stats
 | 工具 | 說明 |
 |------|------|
 | `clawlink_memory_search` | 使用自然語言查詢搜尋記憶 |
-| `clawlink_memory_brief` | 為當前任務生成低噪聲、低 token 成本的記憶摘要 |
+| `clawlink_memory_brief` | 產生聚合結構化 facts 的精簡 recall brief |
 | `clawlink_memory_save` | 儲存帶有三元概念的新記憶 |
 | `clawlink_memory_list` | 列出所有儲存的記憶 |
 | `clawlink_memory_get` | 根據 ID 獲取單一記憶 |
 | `clawlink_memory_stats` | 取得記憶存儲統計資訊 |
 | `clawlink_send_message` | 發送訊息給代理並自動擷取記憶 |
 | `clawlink_diagnose` | 執行全面的 MCP 連接診斷 ⭐ |
+
+## 記憶回歸驗證
+
+目前倉庫內建兩個回歸腳本，用來驗證 MCP 記憶是否真的能提升回答品質，同時不會帶來明顯推理延遲。
+
+### 長程記憶回歸
+
+這個腳本會跑完整的 10 輪 TaskMaster 開發場景，最後檢查 agent 是否能回憶完整專案約束。
+
+```bash
+python scripts/app_scenario_regression.py \
+  --agent-url http://127.0.0.1:8430 \
+  --output ./regression.json
+```
+
+目前在本工作區驗證過的 fresh baseline：
+
+- `fresh_facts_scenario_v7/regression.json`
+- 最終分數：`100.0`
+- 命中項目：`9/9`
+
+### Memory-on vs Memory-off A/B 回歸
+
+這個腳本會先灌入同一組場景記憶，然後對同一批 probe 分別以開啟與關閉 recall 的方式測試。
+
+```bash
+python scripts/app_scenario_ab_regression.py \
+  --agent-url http://127.0.0.1:8430 \
+  --output ./ab_regression.json
+```
+
+目前在本工作區驗證過的 fresh baseline：
+
+- `ab_facts_scenario_v2/ab_regression.json`
+- memory-on 平均分：`91.67`
+- memory-off 平均分：`0.0`
+- 平均分差：`+91.67`
+- memory-on 平均延遲：`3.76ms`
+- memory-off 平均延遲：`3.01ms`
+- 平均延遲差：`+0.75ms`
+
+解讀方式：
+
+- 記憶已被證明可以顯著提升回答完整度
+- recall 快取已把延遲壓到接近無記憶路徑
+
+### 為什麼延遲下降了
+
+目前 runtime 主要靠以下幾點減少 recall 成本：
+
+- 將已載入的 memory entries 保留在程序內快取
+- retriever index 不再每次 search 重建
+- 重複查詢會命中 search cache
+- search hit 不再每次都同步落盤更新 access metadata
 
 ## AI Agent 自動診斷指南
 

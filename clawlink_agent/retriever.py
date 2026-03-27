@@ -17,38 +17,38 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_\-]+|[\u4e00-\u9fff]+")
-_STOPWORDS = {
-    "the", "and", "for", "with", "that", "this", "from", "into", "then", "when", "have", "has",
-    "was", "were", "will", "would", "should", "could", "about", "your", "our", "their", "its",
-    "to", "of", "in", "on", "at", "as", "is", "are", "be", "by", "or", "an", "a",
-    "user", "agent", "users", "agents",
-    "我们", "你们", "他们", "这个", "那个", "以及", "如果", "然后", "就是", "可以", "需要", "进行",
-    "一个", "一些", "没有", "因为", "所以", "但是", "并且", "或者", "的是", "了", "在", "和",
-    "用户", "告诉", "agent", "请回答", "问题", "现在", "之前", "任务",
-}
 
 
 def _tokenise(text: str) -> List[str]:
-    """Lowercase tokenisation; keeps CJK characters as single tokens."""
+    """Lowercase tokenisation with extra n-grams for CJK recall robustness."""
     tokens: List[str] = []
-    for raw in _TOKEN_RE.findall(text):
-        tok = raw.lower().strip()
-        if len(tok) < 2:
-            continue
-        if tok in _STOPWORDS:
-            continue
-        tokens.append(tok)
+    for raw_token in _TOKEN_RE.findall(text):
+        token = raw_token.lower()
+        tokens.append(token)
+        if re.fullmatch(r"[\u4e00-\u9fff]+", raw_token) and len(raw_token) > 2:
+            for size in (2, 3, 4):
+                if len(raw_token) <= size:
+                    continue
+                for idx in range(len(raw_token) - size + 1):
+                    tokens.append(raw_token[idx:idx + size].lower())
     return tokens
 
 
 def _entry_text(entry: MemoryEntry) -> str:
     """Combine searchable fields of a MemoryEntry into one string."""
+    fact_parts: List[str] = []
+    for key, values in entry.facts.items():
+        fact_parts.append(key)
+        fact_parts.extend(values)
+
     parts = [
         entry.topic,
         entry.rubric,
         " ".join(entry.tags),
         " ".join(entry.keywords),
         " ".join(entry.concepts),
+        " ".join(fact_parts),
+        " ".join(fact_parts),
         " ".join(entry.transcript_highlights),
     ]
     return " ".join(parts)

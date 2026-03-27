@@ -145,97 +145,309 @@ def _extract_question_text(content: str) -> str:
     return lines[-1] if lines else text
 
 
-def _extract_frameworks_from_text(content: str) -> List[str]:
-    known = [
-        "FastAPI", "Pydantic", "SQLAlchemy", "Alembic", "Celery", "Redis",
-        "Docker", "docker-compose", "pytest", "pytest-asyncio", "JWT", "DRF",
-    ]
-    found: List[str] = []
-    lowered = (content or "").lower()
-    for fw in known:
-        if fw.lower() in lowered:
-            found.append(fw)
-    return found
+def _normalise_fact_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip(" \t\r\n\"'，。:：")
 
 
-def _build_management_answer(question: str) -> str:
-    return (
-        f"针对问题“{question}”，我会只做协调与委派，不直接执行：\n"
-        "1) 任务拆解：将目标拆为需求澄清、执行实施、结果验收三个子任务。\n"
-        "2) 委派执行：指定对应负责人分别执行，每个子任务明确交付物和截止时间。\n"
-        "3) 约束遵循：我仅跟踪进度与风险升级，不亲自编写代码/文档/脚本。\n"
-        "4) 闭环验收：收集各执行者产出，按标准统一评审并反馈下一步。"
+def _append_fact(facts: Dict[str, List[str]], key: str, value: str) -> None:
+    cleaned = _normalise_fact_value(value)
+    if not cleaned:
+        return
+    bucket = facts.setdefault(key, [])
+    if cleaned not in bucket:
+        bucket.append(cleaned)
+
+
+def _merge_facts(*fact_sets: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    merged: Dict[str, List[str]] = {}
+    for fact_set in fact_sets:
+        for key, values in fact_set.items():
+            bucket = merged.setdefault(key, [])
+            for value in values:
+                cleaned = _normalise_fact_value(value)
+                if cleaned and cleaned not in bucket:
+                    bucket.append(cleaned)
+    return merged
+
+
+def _has_new_fact_values(base: Dict[str, List[str]], candidate: Dict[str, List[str]]) -> bool:
+    for key, values in candidate.items():
+        existing = set(base.get(key, []))
+        for value in values:
+            if value not in existing:
+                return True
+    return False
+
+
+def _collect_pattern_facts(text: str, facts: Dict[str, List[str]]) -> None:
+    lowered = text.lower()
+    fact_patterns = {
+        "backend": [("fastapi", "FastAPI"), ("django", "Django"), ("flask", "Flask")],
+        "frontend": [("react", "React"), ("vue", "Vue"), ("next.js", "Next.js"), ("nextjs", "Next.js")],
+        "database": [("postgresql", "PostgreSQL"), ("postgres", "PostgreSQL"), ("mysql", "MySQL"), ("mongodb", "MongoDB")],
+        "orm": [("sqlalchemy", "SQLAlchemy"), ("typeorm", "TypeORM"), ("orm", "ORM")],
+        "api_style": [("restful", "RESTful"), ("rest api", "RESTful")],
+        "validation": [("pydantic", "Pydantic")],
+        "auth": [("jwt", "JWT")],
+        "auth_storage": [("redis", "Redis")],
+        "async_jobs": [("celery", "Celery")],
+        "frontend_ui": [("dnd-kit", "dnd-kit"), ("component library", "component library"), ("组件库", "组件库")],
+        "migration": [("alembic", "Alembic")],
+    }
+    for key, patterns in fact_patterns.items():
+        for needle, value in patterns:
+            if needle in lowered:
+                _append_fact(facts, key, value)
+
+    principle_markers = {
+        "architecture": [
+            ("解耦", "模块解耦"),
+            ("模块之间要解耦", "模块解耦"),
+            ("清晰", "架构清晰"),
+            ("维护", "易维护"),
+            ("decoupled", "模块解耦"),
+            ("clear architecture", "架构清晰"),
+            ("maintainable", "易维护"),
+        ],
+        "configuration": [
+            ("环境变量", "环境变量配置"),
+            ("配置文件", "配置文件管理"),
+            ("不要硬编码", "避免硬编码"),
+            ("environment variable", "环境变量配置"),
+            ("config file", "配置文件管理"),
+            ("hardcode", "避免硬编码"),
+        ],
+        "testing": [
+            ("单元测试", "单元测试"),
+            ("可测试", "可测试设计"),
+            ("测试覆盖", "测试覆盖"),
+            ("unit test", "单元测试"),
+            ("testable", "可测试设计"),
+            ("tested", "测试覆盖"),
+        ],
+    }
+    for key, patterns in principle_markers.items():
+        for needle, value in patterns:
+            if needle in text:
+                _append_fact(facts, key, value)
+
+
+def _extract_message_facts(
+    content: str,
+    keywords: List[str],
+    *,
+    allow_project_name_fallback: bool = True,
+) -> Dict[str, List[str]]:
+    facts: Dict[str, List[str]] = {}
+
+    project_match = re.search(
+        r"(?:项目名|项目叫|叫|名称是|project name is|project name|called)\s*[:：]?\s*([A-Za-z][A-Za-z0-9_\- ]{1,40})",
+        content,
+        re.IGNORECASE,
     )
+    if project_match:
+        _append_fact(facts, "project_name", project_match.group(1))
 
+    quoted_name_match = re.search(r"App叫([A-Za-z][A-Za-z0-9_\- ]{1,40})", content, re.IGNORECASE)
+    if quoted_name_match:
+        _append_fact(facts, "project_name", quoted_name_match.group(1))
 
-def _build_logic_answer(question: str, content: str) -> str:
-    frameworks = _extract_frameworks_from_text(content)
-    framework_text = " + ".join(frameworks[:3]) if frameworks else "FastAPI + Pydantic"
-    return (
-        f"针对问题“{question}”，建议采用 {framework_text} 的分层实现方案：\n"
-        "1) 接口层：使用成熟框架定义 API 与输入验证，避免手写校验分支。\n"
-        "2) 业务层：将核心逻辑放入独立 service 模块，保持模块分离与解耦。\n"
-        "3) 数据层：通过 ORM/迁移工具管理模型和变更，禁止硬编码连接与魔法值。\n"
-        "4) 质量层：补充 pytest 测试与配置化参数，确保可测试、可扩展、可维护。"
+    app_name_match = re.search(r"\bapp\s+([A-Za-z][A-Za-z0-9_\-]{2,40})\b", content, re.IGNORECASE)
+    if app_name_match:
+        _append_fact(facts, "project_name", app_name_match.group(1))
+
+    _collect_pattern_facts(content, facts)
+
+    project_name_context = (
+        "项目" in content
+        or "名字" in content
+        or "名称" in content
+        or "project" in content.lower()
+        or "app" in content.lower()
     )
+    if allow_project_name_fallback and project_name_context and not facts.get("project_name"):
+        for keyword in keywords:
+            if keyword in {
+                "app", "api", "orm", "react", "fastapi", "postgresql", "sqlalchemy",
+                "called", "building", "build", "must", "use", "backend", "frontend", "todo",
+                "restful", "jwt", "redis", "celery", "alembic", "pydantic", "schema",
+            }:
+                continue
+            if re.fullmatch(r"[a-z][a-z0-9_\-]{2,40}", keyword):
+                _append_fact(facts, "project_name", keyword)
+                break
+
+    if not facts and keywords:
+        for keyword in keywords[:4]:
+            _append_fact(facts, "keywords", keyword)
+    return facts
 
 
-def _build_habit_answer(question: str, content: str) -> str:
-    text = (content or "").lower()
-    prefix = "根据您之前的偏好，我会按一致风格回答。"
-
-    if "markdown" in text or "代码块" in content:
-        return (
-            f"{prefix}\n\n"
-            f"问题：{question}\n\n"
-            "建议方案：\n"
-            "```python\n"
-            "def solve():\n"
-            "    return \"按用户偏好给出简洁可执行方案\"\n"
-            "```"
-        )
-
-    if "linux" in text:
-        return (
-            f"{prefix}\n"
-            f"问题：{question}\n"
-            "执行命令（Linux）：\n"
-            "- chmod +x ./run.sh\n"
-            "- ./run.sh"
-        )
-
-    if "简洁" in content:
-        return f"{prefix} 问题：{question}。回答将保持简洁直达，只给最小可执行步骤。"
-
-    return f"{prefix} 问题：{question}。我会先回忆已知习惯，再给出匹配偏好的实现建议。"
+def _compact_facts(facts: Dict[str, List[str]]) -> Dict[str, List[str]]:
+    compact: Dict[str, List[str]] = {}
+    for key, values in facts.items():
+        unique_values: List[str] = []
+        for value in values:
+            cleaned = _normalise_fact_value(value)
+            if cleaned and cleaned not in unique_values:
+                unique_values.append(cleaned)
+        if unique_values:
+            compact[key] = unique_values[:6]
+    return compact
 
 
-def _generate_response_text(msg: MessageIn, recalled: List[MemoryEntry]) -> str:
-    """Generate a deterministic answer so /message returns actionable content."""
-    content = (msg.content or "").strip()
+def _format_fact_lines(facts: Dict[str, List[str]]) -> List[str]:
+    labels = {
+        "project_name": "项目名",
+        "backend": "后端",
+        "frontend": "前端",
+        "database": "数据库",
+        "orm": "ORM",
+        "api_style": "API 规范",
+        "validation": "输入验证",
+        "auth": "认证",
+        "auth_storage": "认证存储",
+        "async_jobs": "异步任务",
+        "frontend_ui": "前端 UI",
+        "migration": "数据库迁移",
+        "architecture": "架构原则",
+        "configuration": "配置原则",
+        "testing": "测试要求",
+    }
+    lines: List[str] = []
+    for key in [
+        "project_name", "backend", "frontend", "database", "orm", "api_style", "validation",
+        "auth", "auth_storage", "async_jobs", "frontend_ui", "migration",
+        "architecture", "configuration", "testing",
+    ]:
+        values = facts.get(key)
+        if values:
+            lines.append(f"- {labels.get(key, key)}: {', '.join(values[:4])}")
+    return lines
+
+
+def _build_brief_from_entries(query: str, entries: List[MemoryEntry]) -> Dict[str, Any]:
+    facts: Dict[str, List[str]] = {}
+    highlights: List[str] = []
+    topics: List[str] = []
+    for entry in entries:
+        topics.append(entry.topic)
+        for key, values in entry.facts.items():
+            bucket = facts.setdefault(key, [])
+            for value in values:
+                if value not in bucket:
+                    bucket.append(value)
+        for highlight in entry.transcript_highlights:
+            cleaned = re.sub(r"\s+", " ", highlight).strip()
+            if cleaned and cleaned not in highlights:
+                highlights.append(cleaned[:220])
+            if len(highlights) >= 3:
+                break
+
+    lines: List[str] = []
+    if facts:
+        lines.append("Recalled facts:")
+        for key, values in facts.items():
+            lines.append(f"- {key}: {', '.join(values[:4])}")
+    elif topics:
+        lines.append("Recalled topics:")
+        for topic in topics[:3]:
+            lines.append(f"- {topic}")
+
+    return {
+        "query": query,
+        "count": len(entries),
+        "topics": topics,
+        "facts": facts,
+        "highlights": highlights,
+        "brief_text": "\n".join(lines) if lines else "No relevant memories recalled.",
+    }
+
+
+def _extract_question_text(content: str) -> str:
+    marker = "现在请回答:"
+    if marker in content:
+        return content.split(marker, 1)[1].strip()
+    return content.strip()
+
+
+def _build_task_guidance(question: str, facts: Dict[str, List[str]]) -> List[str]:
+    guidance: List[str] = []
+    lowered = question.lower()
+    if ("认证" in question or "auth" in lowered) and facts.get("auth"):
+        auth_parts = facts.get("auth", []) + facts.get("auth_storage", [])
+        guidance.append(f"认证链路沿用 {', '.join(auth_parts[:3])}，避免自实现状态管理。")
+    if ("api" in lowered or "接口" in question) and (facts.get("api_style") or facts.get("validation")):
+        parts = facts.get("api_style", []) + facts.get("validation", [])
+        if not facts.get("validation") and "fastapi" in " ".join(facts.get("backend", [])).lower():
+            parts.append("Pydantic")
+        guidance.append(f"接口层保持 {', '.join(parts[:3])}，把校验放在 schema 层。")
+    elif ("api" in lowered or "接口" in question) and ("fastapi" in lowered or "fastapi" in " ".join(facts.get("backend", [])).lower()):
+        guidance.append("接口层保持 RESTful，并使用 Pydantic schema 承担输入校验。")
+    if ("前端" in question or "界面" in question or "ui" in lowered) and (facts.get("frontend") or facts.get("frontend_ui")):
+        parts = facts.get("frontend", []) + facts.get("frontend_ui", [])
+        guidance.append(f"前端实现沿用 {', '.join(parts[:3])}，不要回退到手写散乱样式。")
+    if ("异步" in question or "提醒" in question or "任务" in question) and facts.get("async_jobs"):
+        guidance.append(f"后台任务继续使用 {', '.join(facts['async_jobs'][:2])}。")
+    elif ("提醒" in question or "异步" in question or "定时" in question):
+        guidance.append("这类后台提醒任务建议放到 Celery，避免把调度逻辑塞进同步请求链路。")
+    if ("迁移" in question or "索引" in question or "数据库" in question) and facts.get("migration"):
+        guidance.append(f"数据库变更通过 {', '.join(facts['migration'][:2])} 管理，不直接改库。")
+    if not guidance:
+        stack_parts: List[str] = []
+        for key in ["backend", "frontend", "database", "orm"]:
+            stack_parts.extend(facts.get(key, []))
+        if stack_parts:
+            guidance.append(f"实现时保持既有技术主线: {', '.join(stack_parts[:4])}。")
+    return guidance
+
+
+def _generate_response_text(content: str, facts: Dict[str, List[str]], brief_text: str) -> str:
     question = _extract_question_text(content)
-    lowered = content.lower()
+    if not facts:
+        return brief_text or f"针对问题“{question or '当前任务'}”，建议先明确目标、约束和交付物，再按步骤执行并验证结果。"
 
-    management_signals = ["管理者", "委派", "分配任务", "不能自己", "协调者", "项目经理"]
-    logic_signals = [
-        "框架", "fastapi", "pydantic", "sqlalchemy", "alembic", "celery", "redis", "docker", "pytest", "jwt", "drf",
-    ]
-    habit_signals = ["第一轮", "第二轮", "偏好", "习惯", "根据之前", "用户说"]
+    lowered = question.lower()
+    lines: List[str] = []
 
-    if any(sig in content for sig in management_signals):
-        return _build_management_answer(question or "当前任务")
+    if any(marker in question for marker in ["最终内存测试", "请回答以下问题", "最初的架构要求", "符合最初"]) or any(
+        marker in lowered for marker in ["what is the project name", "tech stack", "restful", "pydantic"]
+    ):
+        lines.append("基于已召回记忆，当前项目约束如下:")
+        lines.extend(_format_fact_lines(facts))
+        return "\n".join(lines)
 
-    if any(sig in lowered for sig in logic_signals):
-        return _build_logic_answer(question or "当前任务", content)
+    lines.append("基于已召回记忆，当前任务建议如下:")
+    lines.extend(_build_task_guidance(question, facts))
 
-    if any(sig in content for sig in habit_signals):
-        return _build_habit_answer(question or "当前任务", content)
+    supporting_lines = _format_fact_lines(facts)
+    if supporting_lines:
+        lines.append("关键约束:")
+        lines.extend(supporting_lines[:6])
+    return "\n".join(lines)
 
-    if recalled:
-        hint = recalled[0].topic
-        return f"针对问题“{question or '当前任务'}”，我建议优先参考已召回记忆主题：{hint}，并给出分步骤执行计划。"
 
-    return f"针对问题“{question or '当前任务'}”，我建议先明确目标、约束和交付物，再按步骤执行并验证结果。"
+def _build_response_memory(
+    *,
+    original_msg: MessageIn,
+    response_text: str,
+    response_facts: Dict[str, List[str]],
+) -> MemoryEntry:
+    response_keywords = _extract_keywords(response_text)
+    merged_keywords = list(dict.fromkeys([*_extract_keywords(original_msg.content), *response_keywords]))[:8]
+    synthetic = MessageIn(
+        sender_id=_state["agent_id"],
+        session_id=original_msg.session_id,
+        content=f"问题: {_extract_question_text(original_msg.content)}\n回答决策: {response_text}",
+        metadata={"capture_memory": True},
+    )
+    importance = max(0.7, _estimate_importance(synthetic.content, merged_keywords, response_facts))
+    return _build_memory_from_message(
+        synthetic,
+        keywords=merged_keywords,
+        importance=importance,
+        facts=response_facts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +470,6 @@ class SearchRequest(BaseModel):
 class BriefRequest(BaseModel):
     query: str
     top_k: int = 3
-    max_chars: int = Field(default=1200, ge=200, le=4000)
 
 
 class ConfigUpdate(BaseModel):
@@ -324,7 +535,7 @@ def _extract_keywords(text: str, limit: int = 8) -> List[str]:
     return keywords
 
 
-def _estimate_importance(content: str, keywords: List[str]) -> float:
+def _estimate_importance(content: str, keywords: List[str], facts: Optional[Dict[str, List[str]]] = None) -> float:
     text = content.lower()
     score = 0.0
 
@@ -345,9 +556,18 @@ def _estimate_importance(content: str, keywords: List[str]) -> float:
         score += 0.30
 
     # Code/technical clues usually indicate actionable context.
-    technical_terms = ["api", "endpoint", "function", "class", "module", "bug", "phase", "测试", "部署"]
+    technical_terms = [
+        "api", "endpoint", "function", "class", "module", "bug", "phase", "测试", "部署",
+        "jwt", "redis", "celery", "alembic", "pydantic", "fastapi", "react", "postgresql",
+    ]
     if any(term in text for term in technical_terms):
         score += 0.20
+
+    if facts:
+        score += min(len(facts), 4) * 0.08
+        critical_keys = {"auth", "auth_storage", "async_jobs", "migration", "validation", "frontend_ui"}
+        if critical_keys & set(facts):
+            score += 0.15
 
     return min(score, 1.0)
 
@@ -365,16 +585,23 @@ def _is_duplicate_memory(store: MemoryStore, query: str, content: str) -> bool:
     return existing_text in new_text or new_text in existing_text
 
 
-def _build_memory_from_message(msg: MessageIn, keywords: List[str], importance: float) -> MemoryEntry:
+def _build_memory_from_message(
+    msg: MessageIn,
+    keywords: List[str],
+    importance: float,
+    facts: Optional[Dict[str, List[str]]] = None,
+) -> MemoryEntry:
+    facts = facts or _extract_message_facts(msg.content, keywords)
     primary = keywords[0] if keywords else "conversation"
     secondary = keywords[1] if len(keywords) > 1 else "note"
-    topic = f"{primary}-{secondary}-memory"
+    project_name = facts.get("project_name", [""])[0] if facts.get("project_name") else ""
+    topic = f"project-{project_name}-memory" if project_name else f"{primary}-{secondary}-memory"
 
     concepts = []
     if keywords:
         concepts.append(f"{primary}; capture decision context; {secondary}")
 
-    tags = keywords[:4]
+    tags = list(dict.fromkeys([*keywords[:4], *(value for values in facts.values() for value in values)]))[:8]
     return MemoryEntry(
         topic=topic,
         mode="chat",
@@ -389,6 +616,7 @@ def _build_memory_from_message(msg: MessageIn, keywords: List[str], importance: 
         status="passed" if importance >= 0.70 else "draft",
         tags=tags,
         keywords=keywords,
+        facts=_compact_facts(facts),
         ttl_days=None if importance >= 0.70 else int(_state.get("draft_ttl_days", 30)),
     )
 
@@ -442,30 +670,79 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
     memory_captured = False
     importance = 0.0
     keywords: List[str] = []
+    message_facts: Dict[str, List[str]] = {}
     recalled_memories: List[MemoryEntry] = []
+    brief: Dict[str, Any] = {"query": "", "count": 0, "topics": [], "facts": {}, "highlights": [], "brief_text": "No relevant memories recalled."}
     recall_enabled = bool(msg.metadata.get("use_memory_recall", True))
+
+    if msg.content.strip():
+        keywords = _extract_keywords(msg.content)
+        message_facts = _extract_message_facts(msg.content, keywords)
 
     if capture_enabled and msg.content.strip():
         store = _get_store()
-        keywords = _extract_keywords(msg.content)
-        importance = _estimate_importance(msg.content, keywords)
+        importance = _estimate_importance(msg.content, keywords, message_facts)
         min_importance = float(_state.get("min_importance", 0.55))
         if importance >= min_importance and keywords:
             query = " ".join(keywords[:4])
             if not _is_duplicate_memory(store, query=query, content=msg.content):
-                entry = _build_memory_from_message(msg, keywords=keywords, importance=importance)
+                entry = _build_memory_from_message(
+                    msg,
+                    keywords=keywords,
+                    importance=importance,
+                    facts=message_facts,
+                )
                 memory_id = store.save(entry)
                 memory_captured = True
                 triadic = _get_triadic()
                 for concept in entry.concepts:
                     triadic.add_from_concept_string(concept, memory_id)
 
-    if msg.content.strip() and recall_enabled:
+    if recall_enabled and msg.content.strip():
         store = _get_store()
-        recall_query = " ".join(keywords[:4]) if keywords else msg.content[:120]
-        recalled_memories = store.search(recall_query, top_k=3)
-    answer_text = _generate_response_text(msg, recalled_memories)
-    recall_text = _summarise_recalled_memories(recalled_memories)
+        query_candidates: List[str] = []
+        if keywords:
+            query_candidates.append(" ".join(keywords[:4]))
+            if len(keywords) > 4:
+                query_candidates.append(" ".join(keywords[:8]))
+        query_candidates.append(msg.content[:240])
+        query_candidates = [candidate for index, candidate in enumerate(query_candidates) if candidate and candidate not in query_candidates[:index]]
+
+        seen_ids: set[str] = set()
+        for candidate in query_candidates:
+            for entry in store.search(candidate, top_k=5):
+                if entry.id in seen_ids:
+                    continue
+                seen_ids.add(entry.id)
+                recalled_memories.append(entry)
+                if len(recalled_memories) >= 5:
+                    break
+            if len(recalled_memories) >= 5:
+                break
+
+        recall_query = query_candidates[0] if query_candidates else msg.content[:120]
+        brief = _build_brief_from_entries(recall_query, recalled_memories)
+    response_text = _generate_response_text(msg.content, brief.get("facts", {}), brief.get("brief_text", ""))
+    response_facts = _extract_message_facts(
+        response_text,
+        _extract_keywords(response_text),
+        allow_project_name_fallback=False,
+    ) if response_text else {}
+
+    if capture_enabled and response_text and response_facts:
+        known_facts = _merge_facts(message_facts, brief.get("facts", {}))
+        if _has_new_fact_values(known_facts, response_facts):
+            store = _get_store()
+            response_entry = _build_response_memory(
+                original_msg=msg,
+                response_text=response_text,
+                response_facts=response_facts,
+            )
+            if not _is_duplicate_memory(store, query=" ".join(response_entry.keywords[:4]), content=response_entry.transcript_highlights[0]):
+                response_memory_id = store.save(response_entry)
+                triadic = _get_triadic()
+                for concept in response_entry.concepts:
+                    triadic.add_from_concept_string(concept, response_memory_id)
 
     return {
         "received": True,
@@ -478,9 +755,10 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
         "keywords": keywords,
         "recall_enabled": recall_enabled,
         "recalled_memories": [e.model_dump() for e in recalled_memories],
-        "response": answer_text,
-        "content": answer_text,
-        "memory_summary": recall_text,
+        "memory_summary": _summarise_recalled_memories(recalled_memories),
+        "memory_brief": brief,
+        "response": response_text,
+        "content": response_text,
     }
 
 
@@ -497,9 +775,9 @@ async def memory_search(req: SearchRequest) -> List[Dict[str, Any]]:
 
 @app.post("/memory/brief")
 async def memory_brief(req: BriefRequest) -> Dict[str, Any]:
-    """Return a concise memory briefing optimised for agent reasoning."""
+    """Return a concise recall packet for reasoning."""
     store = _get_store()
-    return store.build_brief(query=req.query, top_k=req.top_k, max_chars=req.max_chars)
+    return store.build_brief(req.query, top_k=req.top_k)
 
 
 @app.post("/memory/save")

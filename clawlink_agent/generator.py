@@ -74,6 +74,15 @@ class MemoryFileGenerator:
         lines.append(f"- **Strictness:** {entry.strictness:.2f}")
         lines.append("")
 
+        # -- structured facts -----------------------------------------------
+        if entry.facts:
+            lines.append("## Structured Facts")
+            lines.append("")
+            for key, values in entry.facts.items():
+                rendered = ", ".join(v for v in values if v)
+                lines.append(f"- **{key}:** {rendered}")
+            lines.append("")
+
         # -- transcript highlights -------------------------------------------
         if highlights:
             lines.append("## Transcript Highlights")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -58,6 +58,10 @@ class MemoryEntry(BaseModel):
     keywords: List[str] = Field(
         default_factory=list,
         description="Normalized keywords used for retrieval and trigger matching",
+    )
+    facts: Dict[str, List[str]] = Field(
+        default_factory=dict,
+        description="Structured factual slots extracted from the interaction",
     )
     ttl_days: Optional[int] = Field(
         default=None,

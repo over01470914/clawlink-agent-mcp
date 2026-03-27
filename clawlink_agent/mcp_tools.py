@@ -74,12 +74,11 @@ async def _memory_search(arguments: Dict[str, Any]) -> str:
 
 
 async def _memory_brief(arguments: Dict[str, Any]) -> str:
-    """Return a concise memory briefing optimised for LLM reasoning."""
+    """Return a concise recall packet for agent reasoning."""
     store = _require_store()
     query: str = arguments.get("query", "")
     top_k: int = int(arguments.get("top_k", 3))
-    max_chars: int = int(arguments.get("max_chars", 1200))
-    result = store.build_brief(query=query, top_k=top_k, max_chars=max_chars)
+    result = store.build_brief(query, top_k=top_k)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -190,13 +189,12 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "clawlink_memory_brief",
-        "description": "Fetch a concise memory briefing for the current task so the agent can use memory during reasoning with less noise and lower token cost.",
+        "description": "Build a concise memory brief with aggregated structured facts for reasoning.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Task/question/query to retrieve memory context for"},
-                "top_k": {"type": "integer", "description": "Max memory items", "default": 3},
-                "max_chars": {"type": "integer", "description": "Max chars in returned brief_text", "default": 1200},
+                "query": {"type": "string", "description": "Recall query"},
+                "top_k": {"type": "integer", "description": "Max memories to aggregate", "default": 3},
             },
             "required": ["query"],
         },
@@ -228,6 +226,13 @@ TOOLS: List[Dict[str, Any]] = [
                 "status": {"type": "string", "default": "draft"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "keywords": {"type": "array", "items": {"type": "string"}},
+                "facts": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
                 "ttl_days": {"type": "integer", "minimum": 1},
             },
             "required": ["topic"],

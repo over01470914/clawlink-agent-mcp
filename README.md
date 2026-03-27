@@ -155,13 +155,67 @@ These tools are exposed to MCP-compatible IDEs (Cursor, VS Code, TRAE, etc.):
 | Tool | Description |
 | --- | --- |
 | `clawlink_memory_search` | Search memories using natural-language query |
-| `clawlink_memory_brief` | Get concise memory context for the current task with lower token cost |
+| `clawlink_memory_brief` | Build a concise recall brief with aggregated structured facts |
 | `clawlink_memory_save` | Save new memory with triadic concepts |
 | `clawlink_memory_list` | List all stored memories |
 | `clawlink_memory_get` | Get a single memory by ID |
 | `clawlink_memory_stats` | Get memory storage statistics |
 | `clawlink_send_message` | Send message to agent with auto memory capture |
 | `clawlink_diagnose` | Run comprehensive MCP connection diagnostics ⭐ |
+
+## Memory Validation Regression
+
+The repository now includes two regression scripts to validate that MCP memory is both useful and cheap enough to call during reasoning.
+
+### Long-horizon recall regression
+
+This script runs the 10-round TaskMaster app scenario and verifies the final memory recall answer.
+
+```bash
+python scripts/app_scenario_regression.py \
+  --agent-url http://127.0.0.1:8430 \
+  --output ./regression.json
+```
+
+Latest verified fresh baseline in this workspace:
+
+- `fresh_facts_scenario_v7/regression.json`
+- final recall score: `100.0`
+- correct items: `9/9`
+
+### Memory-on vs memory-off A/B regression
+
+This script seeds the same scenario, then asks the same probes with and without recall enabled.
+
+```bash
+python scripts/app_scenario_ab_regression.py \
+  --agent-url http://127.0.0.1:8430 \
+  --output ./ab_regression.json
+```
+
+Latest verified fresh baseline in this workspace:
+
+- `ab_facts_scenario_v2/ab_regression.json`
+- average score with memory: `91.67`
+- average score without memory: `0.0`
+- average score delta: `+91.67`
+- average latency with memory: `3.76ms`
+- average latency without memory: `3.01ms`
+- average latency delta: `+0.75ms`
+
+Interpretation:
+
+- memory improves answer completeness substantially
+- cached recall keeps latency close to the no-memory path
+
+### Why the latency improved
+
+The current runtime avoids the earlier recall bottlenecks by:
+
+- caching loaded memory entries in process
+- caching the retriever index instead of rebuilding it on every search
+- caching search results for repeated queries
+- avoiding disk writes for every search-hit access touch
 
 ## MCP Auto-Diagnosis for AI Agents
 
