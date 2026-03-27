@@ -37,6 +37,31 @@ pip install -e .
 
 ## Quick Start
 
+### One-click startup (Windows)
+
+If you cloned this repository and want a zero-argument startup path, run:
+
+```bash
+start_clawlink_agent.bat
+```
+
+The script starts the local agent service on port 8430 and auto-writes `.mcp.json`.
+If the port is already occupied, it checks whether the existing process is CLAWLINK-AGENT:
+
+- same service: prompt `Restart service? (y/n)`
+- different service: abort startup to avoid accidental interruption
+
+### One-click startup (Linux)
+
+```bash
+chmod +x ./start_clawlink_agent.sh
+./start_clawlink_agent.sh
+```
+
+The Linux script follows the same behavior: detect occupied port, verify service identity, and ask before restart.
+
+### Manual startup
+
 1. Create memory directory
 
 ```bash
@@ -52,6 +77,24 @@ clawlink-agent serve \
   --display-name "Local Agent 01" \
   --memory-dir ./clawlink_memories \
   --router-url http://ROUTER_HOST:8420
+```
+
+When `serve` starts, it now auto-generates a local MCP config file at `.mcp.json` by default.
+The generated config uses the current Python executable path (`sys.executable`) so users who clone the repo do not need to hand-edit absolute interpreter paths.
+
+Optional flags:
+
+```bash
+clawlink-agent serve \
+  --mcp-config-path ./.mcp.json \
+  --mcp-server-name clawlink-agent \
+  --overwrite-mcp-config
+```
+
+Disable auto-generation when needed:
+
+```bash
+clawlink-agent serve --no-write-mcp-config
 ```
 
 1. Check health
@@ -383,6 +426,24 @@ clawlink-agent serve \
   --display-name "Local Agent 01" \
   --memory-dir ./clawlink_memories \
   --router-url http://ROUTER_HOST:8420
+```
+
+`serve` 启动时默认会自动在本地生成 `.mcp.json`。
+该文件中的 Python 启动命令会使用当前运行环境解释器路径（`sys.executable`），避免用户克隆项目后手工修改绝对路径。
+
+可选参数：
+
+```bash
+clawlink-agent serve \
+  --mcp-config-path ./.mcp.json \
+  --mcp-server-name clawlink-agent \
+  --overwrite-mcp-config
+```
+
+如需关闭自动生成：
+
+```bash
+clawlink-agent serve --no-write-mcp-config
 ```
 
 1. 健康检查

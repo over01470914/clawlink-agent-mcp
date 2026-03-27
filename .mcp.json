@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "clawlink-agent": {
+      "command": "python",
+      "args": [
+        "-m",
+        "clawlink_agent.mcp_stdio_bridge",
+        "http://127.0.0.1:8430"
+      ],
+      "env": {},
+      "description": "CLAWLINK-AGENT Memory MCP Server - Provides memory search, storage, and agent communication"
+    }
+  }
+}

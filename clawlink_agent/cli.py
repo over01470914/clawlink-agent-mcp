@@ -22,6 +22,50 @@ def _setup_logging(verbose: bool = False) -> None:
     )
 
 
+def _generate_mcp_config(server_name: str, agent_url: str) -> dict:
+    """Build MCP config JSON that launches the stdio bridge with current Python."""
+    return {
+        "mcpServers": {
+            server_name: {
+                "command": sys.executable,
+                "args": [
+                    "-m",
+                    "clawlink_agent.mcp_stdio_bridge",
+                    agent_url,
+                ],
+                "env": {},
+                "description": (
+                    "CLAWLINK-AGENT Memory MCP Server - "
+                    "Provides memory search, storage, and agent communication"
+                ),
+            }
+        }
+    }
+
+
+def _write_mcp_config(
+    *,
+    path: str,
+    server_name: str,
+    agent_url: str,
+    overwrite: bool,
+) -> tuple[str, bool]:
+    """Write MCP config file and return (abs_path, created_or_updated)."""
+    abs_path = os.path.abspath(path)
+    parent = os.path.dirname(abs_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    if os.path.exists(abs_path) and not overwrite:
+        return abs_path, False
+
+    payload = _generate_mcp_config(server_name=server_name, agent_url=agent_url)
+    with open(abs_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+    return abs_path, True
+
+
 # ---------------------------------------------------------------------------
 # Sub-commands
 # ---------------------------------------------------------------------------
@@ -46,6 +90,19 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         port=args.port,
         public_endpoint=args.public_endpoint,
     )
+
+    if args.write_mcp_config:
+        target_agent_url = args.mcp_agent_url or f"http://127.0.0.1:{args.port}"
+        mcp_path, created_or_updated = _write_mcp_config(
+            path=args.mcp_config_path,
+            server_name=args.mcp_server_name,
+            agent_url=target_agent_url,
+            overwrite=args.overwrite_mcp_config,
+        )
+        if created_or_updated:
+            print(f"  MCP Config  : wrote {mcp_path}")
+        else:
+            print(f"  MCP Config  : exists {mcp_path} (use --overwrite-mcp-config to rewrite)")
 
     code = generate_pairing_code()
     print(f"\n  CLAWLINK-AGENT starting")
@@ -303,6 +360,39 @@ def _build_parser() -> argparse.ArgumentParser:
         "--public-endpoint",
         default="",
         help="Endpoint Router should call back (default: http://127.0.0.1:<port>)",
+    )
+    serve_p.add_argument(
+        "--write-mcp-config",
+        dest="write_mcp_config",
+        action="store_true",
+        default=True,
+        help="Write a local MCP config JSON for IDE clients (default: enabled)",
+    )
+    serve_p.add_argument(
+        "--no-write-mcp-config",
+        dest="write_mcp_config",
+        action="store_false",
+        help="Disable automatic MCP config generation",
+    )
+    serve_p.add_argument(
+        "--mcp-config-path",
+        default=".mcp.json",
+        help="Path of generated MCP config JSON (default: ./.mcp.json)",
+    )
+    serve_p.add_argument(
+        "--mcp-server-name",
+        default="clawlink-agent",
+        help="Server name key under mcpServers in generated config",
+    )
+    serve_p.add_argument(
+        "--mcp-agent-url",
+        default="",
+        help="Bridge target agent URL (default: http://127.0.0.1:<port>)",
+    )
+    serve_p.add_argument(
+        "--overwrite-mcp-config",
+        action="store_true",
+        help="Overwrite existing MCP config file if present",
     )
 
     # set-memory-dir

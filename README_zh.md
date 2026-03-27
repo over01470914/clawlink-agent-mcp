@@ -34,6 +34,29 @@ pip install -e .
 
 ## 快速開始
 
+### Windows 一鍵啟動
+
+如果是 clone 專案後希望零參數啟動，可直接執行：
+
+```bash
+start_clawlink_agent.bat
+```
+
+此腳本會在 8430 埠啟動本機服務，並自動寫入 `.mcp.json`。
+若埠已被佔用，會先確認是否為 CLAWLINK-AGENT：
+
+- 若是同一服務：詢問是否重啟（`y/n`）
+- 若是其他服務：中止啟動，避免誤停他人程序
+
+### Linux 一鍵啟動
+
+```bash
+chmod +x ./start_clawlink_agent.sh
+./start_clawlink_agent.sh
+```
+
+Linux 腳本同樣會先檢查埠佔用，確認服務身份後再詢問是否重啟。
+
 ### 1. 啟動代理伺服器
 
 ```bash
@@ -43,6 +66,24 @@ clawlink-agent serve \
   --display-name "我的代理" \
   --memory-dir ./memories \
   --router-url http://localhost:8420
+```
+
+`serve` 啟動時預設會自動在本機產生 `.mcp.json`。
+產生的設定會使用目前執行環境的 Python 解譯器路徑（`sys.executable`），因此使用者 clone 專案後通常不需要手動修改絕對路徑。
+
+可選參數：
+
+```bash
+clawlink-agent serve \
+  --mcp-config-path ./.mcp.json \
+  --mcp-server-name clawlink-agent \
+  --overwrite-mcp-config
+```
+
+若要停用自動產生：
+
+```bash
+clawlink-agent serve --no-write-mcp-config
 ```
 
 伺服器啟動時會印出配對碼。將其分享給其他代理以建立連線。
