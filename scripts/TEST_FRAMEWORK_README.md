@@ -105,6 +105,66 @@ clawlink-agent serve --port 8430 --agent-id test-agent --memory-dir ./test_memor
 python scripts/memory_test_runner.py --agent-url http://127.0.0.1:8430 --output results.json
 ```
 
+### 推荐：问答采集 + 外部客观评分（落地流程）
+
+```bash
+# 1) 采集问答（脚本负责提问和记录）
+python scripts/memory_qa_collector.py --agent-url http://127.0.0.1:8430 --output test_qa_results.json
+
+# 2) 把 test_qa_results.json + *_evaluation_prompt.md 交给客观AI评分
+# 评分输出建议另存为 test_qa_scores.json
+```
+
+说明：
+
+- 收集器现在会在回答为空或占位文本时自动重试（默认最多重试2次）。
+- 每条记录会写入 `response_valid`、`response_attempts`、`raw_response`，方便追查链路问题。
+- 评分提示新增硬规则：空回答或占位回答必须 0 分，避免出现“空回答30分”。
+
+### 推荐：A/B 记忆价值对照测试
+
+```bash
+# 对比开启记忆召回 vs 关闭记忆召回
+python scripts/memory_qa_collector.py \
+    --agent-url http://127.0.0.1:8430 \
+    --ab-category management \
+    --count 5 \
+    --output ab_management.json
+```
+
+结果重点字段：
+
+- `avg_score_with_memory`
+- `avg_score_without_memory`
+- `avg_score_delta`
+- `avg_recall_relevance_with_memory`
+- `memory_helped_cases`
+
+解释：
+
+- 若 `avg_score_delta <= 0`，不能声称“记忆增强有效”。
+- 若 `avg_recall_relevance_with_memory` 很低，说明召回内容本身不够相关。
+
+### 推荐：10轮长期记忆场景测试
+
+```bash
+python scripts/memory_qa_collector.py \
+    --agent-url http://127.0.0.1:8430 \
+    --app-scenario \
+    --output app_scenario.json
+```
+
+结果重点字段：
+
+- `round_records`: 每轮回答与召回情况
+- `final_memory_record`: 最终记忆问题回答
+- `memory_recall_evaluation.score`: 长期记忆召回得分
+
+解释：
+
+- 该场景不是测“单轮能不能回答”，而是测多轮之后是否还能保留项目事实与架构原则。
+- 若最终 `memory_recall_evaluation.passed=false`，说明长期记忆保真不足。
+
 ### 运行特定场景测试
 ```bash
 python scripts/memory_test_scenarios.py
@@ -141,6 +201,34 @@ python scripts/memory_test_scenarios.py
 - "建议强化任务委派记忆训练"
 - "建议强化架构规范记忆训练"
 - "建议强化用户偏好记忆训练"
+
+---
+
+## 常见问题排查
+
+### 1) 为什么回答里只有 "Relevant memories recalled"？
+
+这通常不是评分脚本问题，而是被测 Agent 的 `/message` 接口只返回记忆召回摘要，没有接入真实问答推理链路。
+
+### 2) 怎么确认是“无有效回答”而不是“脚本没等到”？
+
+检查结果文件中的字段：
+
+- `response_valid=false`
+- `response_attempts` 达到重试上限
+- `raw_response.response` 为占位文本或空
+
+若出现以上情况，优先修复 Agent 的回答链路，再重复测试。
+
+### 3) 怎么确认“记忆无效”而不是“回答器模板过强”？
+
+优先看 A/B 对照结果：
+
+- 开启记忆和关闭记忆得分几乎一样
+- `memory_helped_cases` 很低或为 0
+- `response_uses_recall=false`
+
+如果同时出现以上现象，说明当前回答质量主要来自回答器模板，而不是记忆系统。
 
 ---
 

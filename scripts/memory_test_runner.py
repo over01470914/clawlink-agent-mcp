@@ -36,6 +36,9 @@ class MemoryTestRunner:
         self.generator = TestDataGenerator(seed=42)
         self.scorer = BenchmarkScorer()
         self.results: List[TestResult] = []
+        self.response_wait_seconds = 20
+        self.response_retry_interval = 2
+        self.max_reasks = 2
 
     async def check_agent_health(self) -> bool:
         """检查agent是否在线"""
@@ -58,10 +61,75 @@ class MemoryTestRunner:
                     "metadata": {"capture_memory": capture_memory}
                 }
                 response = await client.post(f"{self.agent_url}/message", json=payload)
-                return response.json()
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, dict):
+                    return data
+                return {"response": "", "error": "invalid_response_payload"}
         except Exception as e:
             print(f"Failed to send message: {e}")
             return {"response": "", "error": str(e)}
+
+    def _extract_response_text(self, response_data: Dict[str, Any]) -> str:
+        """Best-effort extraction for text response from heterogeneous APIs."""
+        if not isinstance(response_data, dict):
+            return ""
+
+        candidate_fields = ["response", "content", "answer", "message", "text"]
+        for field in candidate_fields:
+            value = response_data.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        nested = response_data.get("data")
+        if isinstance(nested, dict):
+            for field in candidate_fields:
+                value = nested.get(field)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+
+        return ""
+
+    def _is_placeholder_response(self, text: str) -> bool:
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return True
+        placeholders = [
+            "no relevant memories recalled",
+            "relevant memories recalled:",
+        ]
+        return any(token in lowered for token in placeholders)
+
+    async def ask_with_retry(self, content: str) -> Dict[str, Any]:
+        """Send question and retry when response is empty/placeholder."""
+        attempts = 0
+        last_data: Dict[str, Any] = {}
+        last_text = ""
+
+        max_attempts = 1 + self.max_reasks
+        while attempts < max_attempts:
+            attempts += 1
+            if attempts == 1:
+                prompt = content
+            else:
+                prompt = (
+                    "请直接回答上一条问题，不要仅返回记忆召回摘要。"
+                    "请给出明确答案。"
+                )
+
+            last_data = await self.send_message(prompt)
+            last_text = self._extract_response_text(last_data)
+            if last_text and not self._is_placeholder_response(last_text):
+                break
+            if attempts < max_attempts:
+                await asyncio.sleep(self.response_retry_interval)
+
+        return {
+            "response_data": last_data,
+            "response_text": last_text,
+            "attempts": attempts,
+            "is_valid": bool(last_text and not self._is_placeholder_response(last_text)),
+        }
 
     async def save_memory(self, entry: Dict[str, Any]) -> str:
         """手动保存记忆"""
@@ -90,13 +158,16 @@ class MemoryTestRunner:
     async def run_management_test(self, test_case: TestCase) -> TestResult:
         """运行管理驱动测试"""
         context_msg = f"{test_case.context}\n\n现在请回答: {test_case.question}"
-        response_data = await self.send_message(context_msg)
-        response = response_data.get("response", "") or response_data.get("content", "")
+        asked = await self.ask_with_retry(context_msg)
+        response = asked["response_text"]
 
         recalled = await self.search_memories(" ".join(test_case.memory_keywords[:3]))
         recalled_topics = [m.get("topic", "") for m in recalled[:3]]
 
         evaluation = self.scorer.score_management_test(response, test_case)
+        evaluation.setdefault("details", {})
+        evaluation["details"]["response_attempts"] = asked["attempts"]
+        evaluation["details"]["response_valid"] = asked["is_valid"]
 
         return TestResult(
             case_id=test_case.case_id,
@@ -112,13 +183,16 @@ class MemoryTestRunner:
     async def run_logic_test(self, test_case: TestCase) -> TestResult:
         """运行逻辑执行测试"""
         context_msg = f"{test_case.context}\n\n现在请回答: {test_case.question}"
-        response_data = await self.send_message(context_msg)
-        response = response_data.get("response", "") or response_data.get("content", "")
+        asked = await self.ask_with_retry(context_msg)
+        response = asked["response_text"]
 
         recalled = await self.search_memories(" ".join(test_case.memory_keywords[:3]))
         recalled_topics = [m.get("topic", "") for m in recalled[:3]]
 
         evaluation = self.scorer.score_logic_test(response, test_case)
+        evaluation.setdefault("details", {})
+        evaluation["details"]["response_attempts"] = asked["attempts"]
+        evaluation["details"]["response_valid"] = asked["is_valid"]
 
         return TestResult(
             case_id=test_case.case_id,
@@ -134,13 +208,16 @@ class MemoryTestRunner:
     async def run_user_habit_test(self, test_case: TestCase) -> TestResult:
         """运行用户习惯测试"""
         context_msg = f"{test_case.context}\n\n现在请回答: {test_case.question}"
-        response_data = await self.send_message(context_msg)
-        response = response_data.get("response", "") or response_data.get("content", "")
+        asked = await self.ask_with_retry(context_msg)
+        response = asked["response_text"]
 
         recalled = await self.search_memories(" ".join(test_case.memory_keywords[:3]))
         recalled_topics = [m.get("topic", "") for m in recalled[:3]]
 
         evaluation = self.scorer.score_user_habit_test(response, test_case, recalled_topics)
+        evaluation.setdefault("details", {})
+        evaluation["details"]["response_attempts"] = asked["attempts"]
+        evaluation["details"]["response_valid"] = asked["is_valid"]
 
         return TestResult(
             case_id=test_case.case_id,

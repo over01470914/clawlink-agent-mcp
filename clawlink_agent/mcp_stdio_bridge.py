@@ -30,6 +30,19 @@ class MCPStdioBridge:
                 },
             },
             {
+                "name": "clawlink_memory_brief",
+                "description": "Fetch concise memory context for the current task so the agent can reason faster with less MCP noise.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Task or question to retrieve memory context for"},
+                        "top_k": {"type": "integer", "description": "Max memory items", "default": 3},
+                        "max_chars": {"type": "integer", "description": "Max chars in brief_text", "default": 1200},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
                 "name": "clawlink_memory_save",
                 "description": "Save a new memory entry with triadic concepts, score, and evidence.",
                 "inputSchema": {
@@ -217,6 +230,18 @@ Agent 已准备好接收任务。你可以：
                 "/memory/search",
                 method="POST",
                 data={"query": arguments.get("query", ""), "top_k": arguments.get("top_k", 5)}
+            )
+            return json.dumps(result, indent=2, ensure_ascii=False)
+
+        elif tool_name == "clawlink_memory_brief":
+            result = await self._call_http_api(
+                "/memory/brief",
+                method="POST",
+                data={
+                    "query": arguments.get("query", ""),
+                    "top_k": arguments.get("top_k", 3),
+                    "max_chars": arguments.get("max_chars", 1200),
+                }
             )
             return json.dumps(result, indent=2, ensure_ascii=False)
 

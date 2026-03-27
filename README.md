@@ -155,6 +155,7 @@ These tools are exposed to MCP-compatible IDEs (Cursor, VS Code, TRAE, etc.):
 | Tool | Description |
 | --- | --- |
 | `clawlink_memory_search` | Search memories using natural-language query |
+| `clawlink_memory_brief` | Get concise memory context for the current task with lower token cost |
 | `clawlink_memory_save` | Save new memory with triadic concepts |
 | `clawlink_memory_list` | List all stored memories |
 | `clawlink_memory_get` | Get a single memory by ID |
@@ -180,6 +181,17 @@ This automatically runs these tests and returns a user-friendly report:
 2. **Agent Info** - Confirm version and memory count
 3. **Memory List** - Verify memory system is accessible
 4. **Send Message** - Test two-way communication
+
+## Recommended MCP Reasoning Flow
+
+For AI agents that want memory to improve reasoning quality without adding unnecessary latency or prompt noise:
+
+1. call `clawlink_memory_brief` with the current task or question
+2. inject `brief_text` into the agent's reasoning context
+3. only call `clawlink_memory_search` when raw memory records are actually needed
+4. save new stable facts with `clawlink_memory_save` after the task completes
+
+This flow is preferred over sending full raw memory JSON into the model on every turn.
 
 ### Standalone Diagnostic Script
 
@@ -268,7 +280,9 @@ For direct Router integration testing:
 2. run `clawlink-agent pair --router-url http://HOST:8420 --port <agent-port>`
 3. Router will register the agent through `/agents/register`
 
-`/message` also returns `response` and `content` fields containing recalled memory context so generic HTTP Router clients receive non-empty text.
+`/message` now returns actionable answer text in `response` and `content`.
+
+It also provides `memory_summary` as a separate field for recalled-memory diagnostics, so test scripts can score answer quality without mixing in recall-only placeholder text.
 
 ## Standalone Memory Automation Test
 

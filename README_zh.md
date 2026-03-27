@@ -153,6 +153,9 @@ clawlink-agent stats
 | POST | `/group/should-respond` | 檢查代理是否應回應訊息 |
 | POST | `/group/fetch` | 從路由器取得群聊訊息 |
 
+`/message` 會在 `response` 與 `content` 欄位返回可直接閱讀的回答文本，
+並在 `memory_summary` 欄位返回記憶召回摘要，方便測試腳本將「回答品質」與「記憶召回」分開評估。
+
 ## MCP 工具參考
 
 這些工具會暴露給支援 MCP 的 IDE（Cursor、VS Code、TRAE 等）：
@@ -160,6 +163,7 @@ clawlink-agent stats
 | 工具 | 說明 |
 |------|------|
 | `clawlink_memory_search` | 使用自然語言查詢搜尋記憶 |
+| `clawlink_memory_brief` | 為當前任務生成低噪聲、低 token 成本的記憶摘要 |
 | `clawlink_memory_save` | 儲存帶有三元概念的新記憶 |
 | `clawlink_memory_list` | 列出所有儲存的記憶 |
 | `clawlink_memory_get` | 根據 ID 獲取單一記憶 |
@@ -185,6 +189,17 @@ clawlink-agent stats
 2. **代理資訊** - 確認版本和記憶數量
 3. **記憶列表** - 驗證記憶系統可存取
 4. **發送訊息** - 測試雙向通訊
+
+## 建議的 MCP 推理流程
+
+若希望記憶功能真正提升 Agent 的思考品質，同時避免額外延遲與上下文噪聲，建議按以下方式使用：
+
+1. 先用 `clawlink_memory_brief` 針對當前任務取回精簡記憶摘要
+2. 將 `brief_text` 注入 Agent 的思考上下文
+3. 僅在確實需要原始記憶內容時，再呼叫 `clawlink_memory_search`
+4. 任務完成後，再用 `clawlink_memory_save` 寫回穩定事實
+
+這個流程比每輪都把完整記憶 JSON 餵給模型更適合「記憶增強 + 加速」。
 
 ### 獨立診斷腳本
 

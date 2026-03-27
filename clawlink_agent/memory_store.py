@@ -38,6 +38,16 @@ def _canonical_dumps(data: Any) -> str:
     return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+def _clean_brief_text(text: str) -> str:
+    cleaned = str(text or "")
+    cleaned = re.sub(r"^#+\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = cleaned.replace("|", " ")
+    cleaned = cleaned.replace(">", " ")
+    cleaned = re.sub(r"- \*\*[^*]+\*\*:\s*", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def _pack_signature(pack_version: str, metadata: Dict[str, Any], memories: List[Dict[str, Any]]) -> str:
     payload = {
         "pack_version": pack_version,
@@ -118,7 +128,11 @@ class MemoryStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._merge_similarity_threshold = 0.55
         self._decay_half_life_days = 45.0
+        self._search_cache: Dict[tuple[str, int], List[str]] = {}
         logger.info("MemoryStore initialised at %s", self._dir)
+
+    def _invalidate_cache(self) -> None:
+        self._search_cache.clear()
 
     # -- persistence ---------------------------------------------------------
 
@@ -133,6 +147,7 @@ class MemoryStore:
         content = MemoryFileGenerator.generate(entry)
         path = self._dir / f"{entry.id}.md"
         path.write_text(content, encoding="utf-8")
+        self._invalidate_cache()
         logger.info("Saved memory %s to %s", entry.id, path)
         return entry.id
 
@@ -165,6 +180,7 @@ class MemoryStore:
         path = self._dir / f"{memory_id}.md"
         if path.exists():
             path.unlink()
+            self._invalidate_cache()
             logger.info("Deleted memory %s", memory_id)
             return True
         logger.warning("Memory %s not found for deletion", memory_id)
@@ -175,6 +191,16 @@ class MemoryStore:
     def search(self, query: str, top_k: int = 5) -> List[MemoryEntry]:
         """Search memories by query string using TF-IDF with keyword fallback."""
         from .retriever import TFIDFRetriever  # late import
+
+        cache_key = (query.strip().lower(), int(top_k))
+        cached_ids = self._search_cache.get(cache_key)
+        if cached_ids:
+            id_map = {entry.id: entry for entry in self.list_all()}
+            cached_results = [id_map[mid] for mid in cached_ids if mid in id_map]
+            if cached_results:
+                for entry in cached_results:
+                    self._touch(entry)
+                return cached_results[:top_k]
 
         all_entries = self.list_all()
         if not all_entries:
@@ -187,9 +213,63 @@ class MemoryStore:
             reverse=True,
         )
         results = ranked[:top_k]
+        self._search_cache[cache_key] = [entry.id for entry in results]
         for entry in results:
             self._touch(entry)
         return results
+
+    def build_brief(self, query: str, top_k: int = 3, max_chars: int = 1200) -> Dict[str, Any]:
+        """Return a concise memory briefing optimised for LLM reasoning, not raw storage inspection."""
+        results = self.search(query, top_k=top_k)
+        items: List[Dict[str, Any]] = []
+        lines: List[str] = []
+
+        for entry in results:
+            concepts = []
+            for concept in entry.concepts[:2]:
+                parts = [part.strip() for part in concept.split(";")]
+                if len(parts) >= 3:
+                    concepts.append({
+                        "topic": parts[0],
+                        "action": parts[1],
+                        "evidence": parts[2],
+                    })
+
+            fact_parts: List[str] = []
+            for concept in concepts:
+                fact_parts.append(f"{concept['topic']} -> {concept['action']} -> {concept['evidence']}")
+
+            if not fact_parts and entry.transcript_highlights:
+                fact_parts.append(_clean_brief_text(entry.transcript_highlights[0]))
+
+            highlight = " ; ".join(part for part in fact_parts if part).strip()
+            if len(highlight) > 220:
+                highlight = highlight[:220].rstrip() + "..."
+
+            items.append({
+                "id": entry.id,
+                "topic": entry.topic,
+                "confidence": entry.confidence,
+                "score": entry.score,
+                "keywords": entry.keywords[:6],
+                "concepts": concepts,
+                "facts": fact_parts[:3],
+                "highlight": highlight,
+            })
+
+            summary_line = f"- {entry.topic} | confidence={entry.confidence:.2f} | {highlight or 'no-highlight'}"
+            lines.append(summary_line)
+
+        brief_text = "\n".join(lines)
+        if len(brief_text) > max_chars:
+            brief_text = brief_text[:max_chars].rstrip() + "..."
+
+        return {
+            "query": query,
+            "count": len(items),
+            "items": items,
+            "brief_text": brief_text,
+        }
 
     def search_by_topic(self, topic: str) -> List[MemoryEntry]:
         """Return memories whose topic matches (case-insensitive substring)."""
@@ -202,6 +282,7 @@ class MemoryStore:
         """Change the backing directory (does NOT move existing files)."""
         self._dir = Path(new_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._invalidate_cache()
         logger.info("Memory directory updated to %s", self._dir)
 
     def touch(self, memory_id: str) -> bool:
