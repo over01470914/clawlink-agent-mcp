@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_TRANSCRIPT_SECTION_RE = re.compile(
+    r"^##\s+Transcript Highlights\s*$\n?(.*?)(?=^##\s+|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
 
 
 def _parse_iso(value: str) -> datetime:
@@ -46,6 +50,66 @@ def _clean_brief_text(text: str) -> str:
     cleaned = re.sub(r"- \*\*[^*]+\*\*:\s*", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _clean_transcript_highlight(text: str) -> str:
+    """Normalize stored transcript content and strip generator markdown noise."""
+    cleaned_lines: List[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = re.sub(r"^\s*(>\s*)+", "", raw_line).rstrip()
+        if not line:
+            if cleaned_lines and cleaned_lines[-1] != "":
+                cleaned_lines.append("")
+            continue
+        if line.startswith("## "):
+            continue
+        if line.startswith("|"):
+            continue
+        if line.startswith("- **"):
+            continue
+        if line.startswith("---"):
+            continue
+        cleaned_lines.append(line)
+
+    while cleaned_lines and cleaned_lines[-1] == "":
+        cleaned_lines.pop()
+    while cleaned_lines and cleaned_lines[0] == "":
+        cleaned_lines.pop(0)
+
+    return "\n".join(cleaned_lines).strip()
+
+
+def _extract_transcript_highlights(body: str) -> List[str]:
+    """Extract only the Transcript Highlights section instead of ingesting the whole markdown body."""
+    match = _TRANSCRIPT_SECTION_RE.search(body or "")
+    if not match:
+        return []
+
+    section = match.group(1)
+    highlights: List[str] = []
+    current_lines: List[str] = []
+
+    for line in section.splitlines():
+        if re.match(r"^\s*>", line):
+            current_lines.append(line)
+            continue
+
+        if current_lines:
+            cleaned = _clean_transcript_highlight("\n".join(current_lines))
+            if cleaned:
+                highlights.append(cleaned)
+            current_lines = []
+
+    if current_lines:
+        cleaned = _clean_transcript_highlight("\n".join(current_lines))
+        if cleaned:
+            highlights.append(cleaned)
+
+    deduped: List[str] = []
+    for item in highlights:
+        if item and item not in deduped:
+            deduped.append(item)
+    return deduped
 
 
 def _pack_signature(pack_version: str, metadata: Dict[str, Any], memories: List[Dict[str, Any]]) -> str:
@@ -103,10 +167,12 @@ def _parse_md(path: Path) -> Optional[MemoryEntry]:
         logger.warning("Bad YAML in %s: %s", path, exc)
         return None
 
-    # Attach body text as the first transcript highlight if not already present
     body = text[match.end():].strip()
-    if body and body not in meta.get("transcript_highlights", []):
-        meta.setdefault("transcript_highlights", []).append(body)
+    parsed_highlights = _extract_transcript_highlights(body)
+    if parsed_highlights:
+        meta["transcript_highlights"] = parsed_highlights
+    else:
+        meta.setdefault("transcript_highlights", [])
 
     try:
         return MemoryEntry(**meta)
