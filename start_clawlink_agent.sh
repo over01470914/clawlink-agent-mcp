@@ -24,6 +24,40 @@ find_listen_pid() {
   echo ""
 }
 
+http_ok() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS "$url" >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$url" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+
+url = sys.argv[1]
+with urllib.request.urlopen(url, timeout=2):
+    pass
+PY
+    return $?
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    python - "$url" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+
+url = sys.argv[1]
+with urllib.request.urlopen(url, timeout=2):
+    pass
+PY
+    return $?
+  fi
+
+  return 1
+}
+
 EXISTING_PID="$(find_listen_pid "$PORT" || true)"
 if [[ -n "${EXISTING_PID}" ]]; then
   EXISTING_CMD="$(ps -p "$EXISTING_PID" -o command= 2>/dev/null || true)"
@@ -61,9 +95,54 @@ echo "Agent ID   : ${AGENT_ID}"
 echo "Memory Dir : ${MEMORY_DIR}"
 echo
 
-exec "$PYTHON_CMD" -m clawlink_agent.cli serve \
+LOG_FILE="./start_clawlink_agent.log"
+"$PYTHON_CMD" -m clawlink_agent.cli serve \
   --port "$PORT" \
   --agent-id "$AGENT_ID" \
   --display-name "$DISPLAY_NAME" \
   --memory-dir "$MEMORY_DIR" \
-  --overwrite-mcp-config
+  --overwrite-mcp-config \
+  >"$LOG_FILE" 2>&1 &
+
+SERVICE_PID=$!
+echo "Service process started in background. pid=${SERVICE_PID}"
+echo "Logs: ${LOG_FILE}"
+echo "Running health checks..."
+
+READY=0
+for _ in $(seq 1 20); do
+  if http_ok "http://127.0.0.1:${PORT}/ping"; then
+    READY=1
+    break
+  fi
+  sleep 1
+done
+
+if [[ "$READY" == "1" ]]; then
+  if http_ok "http://127.0.0.1:${PORT}/ping"; then
+    echo "[OK] /ping"
+  else
+    echo "[FAIL] /ping"
+  fi
+
+  if http_ok "http://127.0.0.1:${PORT}/health"; then
+    echo "[OK] /health"
+  else
+    echo "[FAIL] /health"
+  fi
+
+  if http_ok "http://127.0.0.1:${PORT}/info"; then
+    echo "[OK] /info"
+  else
+    echo "[FAIL] /info"
+  fi
+else
+  echo "[WARN] Service did not respond on /ping within timeout."
+  echo "[WARN] Skip endpoint checks."
+fi
+
+echo
+echo "Launcher completed."
+echo "Press Enter to close this launcher script only."
+echo "The CLAWLINK-AGENT service will keep running in background."
+read -r _

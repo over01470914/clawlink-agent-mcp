@@ -51,6 +51,9 @@ If the port is already occupied, it checks whether the existing process is CLAWL
 - same service: prompt `Restart service? (y/n)`
 - different service: abort startup to avoid accidental interruption
 
+After startup, the launcher runs health checks in order: `/ping` -> `/health` -> `/info`.
+At the end it waits for keypress and closes the launcher script only; the service keeps running in background.
+
 ### One-click startup (Linux)
 
 ```bash
@@ -59,6 +62,7 @@ chmod +x ./start_clawlink_agent.sh
 ```
 
 The Linux script follows the same behavior: detect occupied port, verify service identity, and ask before restart.
+It also runs ordered health checks and then waits for Enter to close only the launcher script.
 
 ### Manual startup
 
@@ -143,6 +147,75 @@ clawlink-agent bootstrap-deps
 ```
 
 `serve`, `search`, `list`, `stats`, `replay-queue`, and `pair` also run dependency bootstrap automatically before importing their runtime modules.
+
+## MCP Tools Reference
+
+These tools are exposed to MCP-compatible IDEs (Cursor, VS Code, TRAE, etc.):
+
+| Tool | Description |
+| --- | --- |
+| `clawlink_memory_search` | Search memories using natural-language query |
+| `clawlink_memory_save` | Save new memory with triadic concepts |
+| `clawlink_memory_list` | List all stored memories |
+| `clawlink_memory_get` | Get a single memory by ID |
+| `clawlink_memory_stats` | Get memory storage statistics |
+| `clawlink_send_message` | Send message to agent with auto memory capture |
+| `clawlink_diagnose` | Run comprehensive MCP connection diagnostics ⭐ |
+
+## MCP Auto-Diagnosis for AI Agents
+
+When an AI agent connects to CLAWLINK-AGENT via MCP, it should **automatically run diagnostics** to verify the connection is working properly.
+
+### For AI Agents (Auto-Check on Connect)
+
+After connecting to the MCP server, the agent should execute:
+
+```
+Use the clawlink_diagnose tool to verify MCP connection is healthy.
+```
+
+This automatically runs these tests and returns a user-friendly report:
+
+1. **Health Check** - Verify agent is responding
+2. **Agent Info** - Confirm version and memory count
+3. **Memory List** - Verify memory system is accessible
+4. **Send Message** - Test two-way communication
+
+### Standalone Diagnostic Script
+
+Run the full diagnostic script:
+
+```bash
+python scripts/test_mcp_connection.py
+```
+
+This provides detailed output with 7 test cases:
+
+- Health Check
+- MCP Initialize
+- Tools List
+- Memory Stats
+- Memory Search
+- Memory List
+- Send Message
+
+### Quick One-Click Start with Test
+
+Windows:
+```bash
+start_mcp_with_test.bat
+```
+
+PowerShell:
+```powershell
+.\start_mcp_with_test.ps1
+```
+
+This automatically:
+1. Starts CLAWLINK-AGENT service
+2. Runs full MCP connection tests
+3. Displays user-friendly status report
+4. Notifies user of connection success/failure
 
 ## Memory Pack Metadata and Validation
 
@@ -555,3 +628,45 @@ Replay 队列用于低置信度或失败项的复习与再学习。
 - Router 地址通过 CLI / 环境变量 / 配置传入。
 - 记忆目录按机器配置。
 - 端口保持可配置，避免冲突。
+
+## AI Agent Behavior Guide
+
+When an AI Agent connects to CLAWLINK-AGENT MCP service, it should follow these behavior guidelines:
+
+### Auto-Check Flow After Connection
+
+1. **Connect to MCP** → Read `.mcp.json` configuration
+2. **Initialize MCP Connection** → Send `initialize` request
+3. **Get Tools List** → Call `tools/list` to confirm available tools
+4. **Run Diagnostics** → Call `clawlink_diagnose` to verify connection status
+5. **Report to User** → Generate user-friendly message based on diagnostic results
+
+### MCP Diagnostic Code for AI Agents
+
+```python
+# When connected to CLAWLINK-AGENT MCP, Agent should automatically execute:
+result = await mcp_client.call_tool("clawlink_diagnose", {})
+
+# Parse diagnostic results
+if result.status == "HEALTHY":
+    print("✅ MCP service is running normally! All tests passed.")
+else:
+    print("⚠️ MCP service has some issues, needs checking.")
+```
+
+### Key Tools Agent Should Remember
+
+| Tool Name | Purpose |
+|----------|---------|
+| `clawlink_memory_search` | Search historical memories |
+| `clawlink_memory_save` | Store new memories |
+| `clawlink_send_message` | Send messages and auto-capture memories |
+| `clawlink_diagnose` | Diagnose connection status |
+
+### Interpreting Diagnostic Results
+
+When receiving `clawlink_diagnose` results:
+
+- **status: HEALTHY** → MCP service is fully operational, can start working
+- **status: DEGRADED** → Some features are abnormal, should notify user
+- **Test failures** → Check failed test items in detail and report

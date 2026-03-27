@@ -95,6 +95,16 @@ class MCPStdioBridge:
                     "required": ["content"],
                 },
             },
+            {
+                "name": "clawlink_diagnose",
+                "description": "Run a comprehensive diagnostic test on the MCP connection and return a status report.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "verbose": {"type": "boolean", "description": "Include detailed output", "default": False},
+                    },
+                },
+            },
         ]
 
     async def _call_http_api(self, endpoint: str, method: str = "GET", data: Optional[Dict] = None) -> Dict:
@@ -105,6 +115,101 @@ class MCPStdioBridge:
             else:
                 resp = await client.post(url, json=data)
             return resp.json()
+
+    async def _run_diagnostics(self, verbose: bool = False) -> Dict[str, Any]:
+        from datetime import datetime
+
+        tests = []
+        all_passed = True
+
+        try:
+            health = await self._call_http_api("/ping")
+            tests.append({
+                "name": "Health Check",
+                "passed": health.get("status") == "ok",
+                "message": f"Agent ID: {health.get('agent_id', 'unknown')}"
+            })
+        except Exception as e:
+            tests.append({"name": "Health Check", "passed": False, "message": str(e)})
+            all_passed = False
+
+        try:
+            info = await self._call_http_api("/info")
+            tests.append({
+                "name": "Agent Info",
+                "passed": True,
+                "message": f"Version: {info.get('version', 'unknown')}, Memories: {info.get('memory_count', 0)}"
+            })
+        except Exception as e:
+            tests.append({"name": "Agent Info", "passed": False, "message": str(e)})
+
+        try:
+            memories = await self._call_http_api("/memory/list")
+            tests.append({
+                "name": "Memory List",
+                "passed": True,
+                "message": f"Found {len(memories)} memories"
+            })
+        except Exception as e:
+            tests.append({"name": "Memory List", "passed": False, "message": str(e)})
+            all_passed = False
+
+        try:
+            msg_result = await self._call_http_api(
+                "/message",
+                method="POST",
+                data={"content": "MCP diagnostic test", "sender_id": "diagnostic"}
+            )
+            tests.append({
+                "name": "Send Message",
+                "passed": msg_result.get("received", False),
+                "message": "Message sent successfully" if msg_result.get("received") else "Failed"
+            })
+        except Exception as e:
+            tests.append({"name": "Send Message", "passed": False, "message": str(e)})
+            all_passed = False
+
+        passed_count = sum(1 for t in tests if t["passed"])
+        total_count = len(tests)
+
+        result = {
+            "timestamp": datetime.now().isoformat(),
+            "agent_url": self.agent_url,
+            "status": "HEALTHY" if all_passed else "DEGRADED",
+            "summary": {
+                "total_tests": total_count,
+                "passed": passed_count,
+                "failed": total_count - passed_count,
+                "pass_rate": round(passed_count / total_count * 100, 1) if total_count > 0 else 0
+            },
+            "tests": tests,
+            "user_notification": self._generate_notification(all_passed, passed_count, total_count)
+        }
+
+        return result
+
+    def _generate_notification(self, all_passed: bool, passed: int, total: int) -> str:
+        if all_passed:
+            return f"""
+✅ **CLAWLINK-AGENT MCP 服务状态报告**
+
+🎉 **MCP 服务运行正常！**
+
+**测试结果**: {passed}/{total} 项通过 (100%)
+
+Agent 已准备好接收任务。你可以：
+- 使用 `clawlink_memory_search` 搜索记忆
+- 使用 `clawlink_send_message` 发送消息
+- 使用 `clawlink_memory_list` 查看所有记忆
+"""
+        else:
+            return f"""
+⚠️ **CLAWLINK-AGENT MCP 服务状态报告**
+
+**测试结果**: {passed}/{total} 项通过
+
+部分功能可能无法正常工作，请检查服务状态。
+"""
 
     async def execute_tool(self, tool_name: str, arguments: Dict) -> str:
         if tool_name == "clawlink_memory_search":
@@ -159,6 +264,9 @@ class MCPStdioBridge:
                 }
             )
             return json.dumps(result, indent=2, ensure_ascii=False)
+
+        elif tool_name == "clawlink_diagnose":
+            return json.dumps(await self._run_diagnostics(arguments.get("verbose", False)), indent=2, ensure_ascii=False)
 
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 

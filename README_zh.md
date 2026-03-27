@@ -48,6 +48,9 @@ start_clawlink_agent.bat
 - 若是同一服務：詢問是否重啟（`y/n`）
 - 若是其他服務：中止啟動，避免誤停他人程序
 
+啟動後會依序執行健康檢查：`/ping` -> `/health` -> `/info`。
+最後會停留在結尾畫面，按鍵後只關閉啟動腳本本身，服務會持續在背景執行。
+
 ### Linux 一鍵啟動
 
 ```bash
@@ -56,6 +59,7 @@ chmod +x ./start_clawlink_agent.sh
 ```
 
 Linux 腳本同樣會先檢查埠佔用，確認服務身份後再詢問是否重啟。
+同時也會依序做健康檢查，最後等待 Enter 後只關閉啟動腳本。
 
 ### 1. 啟動代理伺服器
 
@@ -151,19 +155,72 @@ clawlink-agent stats
 
 ## MCP 工具參考
 
-這些工具會暴露給支援 MCP 的 IDE：
+這些工具會暴露給支援 MCP 的 IDE（Cursor、VS Code、TRAE 等）：
 
 | 工具 | 說明 |
 |------|------|
 | `clawlink_memory_search` | 使用自然語言查詢搜尋記憶 |
 | `clawlink_memory_save` | 儲存帶有三元概念的新記憶 |
 | `clawlink_memory_list` | 列出所有儲存的記憶 |
-| `clawlink_memory_replay_next` | 取得重播佇列中的下一個項目 |
-| `clawlink_memory_conflicts` | 偵測記憶間的衝突 |
-| `clawlink_memory_set_dir` | 在執行時更改記憶目錄 |
+| `clawlink_memory_get` | 根據 ID 獲取單一記憶 |
 | `clawlink_memory_stats` | 取得記憶存儲統計資訊 |
-| `clawlink_group_fetch_messages` | 從路由器取得群聊訊息 |
-| `clawlink_group_check_mentions` | 檢查代理是否在訊息中被 @提及 |
+| `clawlink_send_message` | 發送訊息給代理並自動擷取記憶 |
+| `clawlink_diagnose` | 執行全面的 MCP 連接診斷 ⭐ |
+
+## AI Agent 自動診斷指南
+
+當 AI Agent 透過 MCP 連接到 CLAWLINK-AGENT 時，**應自動執行診斷檢查**以驗證連接是否正常運作。
+
+### 連接後自動檢查（AI Agent 應執行的操作）
+
+連接到 MCP 伺服器後，Agent 應該執行以下檢查：
+
+```
+使用 clawlink_diagnose 工具驗證 MCP 連接是否正常。
+```
+
+這會自動執行以下測試並返回使用者友好的報告：
+
+1. **健康檢查** - 驗證代理是否正常回應
+2. **代理資訊** - 確認版本和記憶數量
+3. **記憶列表** - 驗證記憶系統可存取
+4. **發送訊息** - 測試雙向通訊
+
+### 獨立診斷腳本
+
+也可以執行完整的診斷腳本：
+
+```bash
+python scripts/test_mcp_connection.py
+```
+
+這提供更詳細的輸出，包括所有 7 個測試案例：
+
+- 健康檢查 (Health Check)
+- MCP 初始化 (MCP Initialize)
+- 工具列表 (Tools List)
+- 記憶統計 (Memory Stats)
+- 記憶搜尋 (Memory Search)
+- 記憶列表 (Memory List)
+- 發送訊息 (Send Message)
+
+### 一鍵啟動並測試
+
+Windows：
+```bash
+start_mcp_with_test.bat
+```
+
+PowerShell：
+```powershell
+.\start_mcp_with_test.ps1
+```
+
+這會自動：
+1. 啟動 CLAWLINK-AGENT 服務
+2. 執行完整的 MCP 連接測試
+3. 顯示使用者友好的狀態報告
+4. 通知使用者連接成功/失敗
 
 ## 記憶格式
 
@@ -234,6 +291,48 @@ IDE (Cursor/VS Code)
     v
 [路由器] <--> [其他代理]
 ```
+
+## AI Agent 行為指南
+
+當 AI Agent 連接到 CLAWLINK-AGENT MCP 服務時，應遵循以下行為規範：
+
+### 連接後自動檢查流程
+
+1. **連接到 MCP** → 讀取 `.mcp.json` 配置
+2. **初始化 MCP 連接** → 發送 `initialize` 請求
+3. **獲取工具列表** → 呼叫 `tools/list` 確認可用工具
+4. **執行診斷檢查** → 呼叫 `clawlink_diagnose` 驗證連接狀態
+5. **向用戶報告** → 根據診斷結果生成友好提示
+
+### AI Agent 應執行的 MCP 診斷代碼
+
+```python
+# 當連接到 CLAWLINK-AGENT MCP 後，Agent 應自動執行：
+result = await mcp_client.call_tool("clawlink_diagnose", {})
+
+# 解析診斷結果
+if result.status == "HEALTHY":
+    print("✅ MCP 服務運行正常！所有功能測試通過。")
+else:
+    print("⚠️ MCP 服務部分異常，需要檢查。")
+```
+
+### Agent 應記憶的關鍵工具
+
+| 工具名稱 | 用途 |
+|----------|------|
+| `clawlink_memory_search` | 搜尋歷史記憶 |
+| `clawlink_memory_save` | 儲存新記憶 |
+| `clawlink_send_message` | 發送訊息並自動擷取記憶 |
+| `clawlink_diagnose` | 診斷連接狀態 |
+
+### 診斷結果解讀
+
+當收到 `clawlink_diagnose` 的結果時：
+
+- **status: HEALTHY** → MCP 服務完全正常，可以開始工作
+- **status: DEGRADED** → 部分功能異常，應通知用戶
+- **測試失敗** → 詳細檢查失敗的測試項目並報告
 
 ## 授權
 

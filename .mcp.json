@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "clawlink-agent": {
-      "command": "python",
+      "command": "C:\\Users\\administration\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
       "args": [
         "-m",
         "clawlink_agent.mcp_stdio_bridge",
