@@ -5,9 +5,11 @@ Exposes endpoints that the Router calls, plus memory management APIs.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import subprocess
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -41,6 +43,8 @@ _state: Dict[str, Any] = {
     "auto_memory_capture": False,
     "min_importance": 0.55,
     "draft_ttl_days": 30,
+    "openclaw_enabled": True,
+    "openclaw_required": True,
 }
 
 app = FastAPI(title="CLAWLINK-AGENT", version=__version__)
@@ -402,6 +406,173 @@ def _build_task_guidance(question: str, facts: Dict[str, List[str]]) -> List[str
     return guidance
 
 
+def _generate_teaching_response(content: str, brief: Dict[str, Any]) -> str:
+    """Generate a student response to teaching content.
+
+    Echo/summarise the received teaching content and include any recalled
+    memories so the response demonstrates that the student captured and
+    understood the material.
+    """
+    lines: List[str] = []
+
+    # Summarise the teaching content that was just received
+    snippet = content.strip()
+    if len(snippet) > 300:
+        snippet = snippet[:300] + "…"
+    lines.append(f"收到教學內容: {snippet}")
+
+    # Include recalled memory highlights to show understanding
+    highlights = brief.get("highlights", [])
+    if highlights:
+        lines.append("已回憶起相關記憶:")
+        for h in highlights[:5]:
+            lines.append(f"- {h}")
+
+    # Echo key facts if available
+    facts = brief.get("facts", {})
+    if facts:
+        lines.append("已記錄的關鍵事實:")
+        for key, values in list(facts.items())[:5]:
+            lines.append(f"- {key}: {', '.join(str(v) for v in values[:3])}")
+
+    if not highlights and not facts:
+        lines.append("已將此內容存入記憶。")
+
+    return "\n".join(lines)
+
+
+def _filter_brief_for_prompt(content: str, brief: Dict[str, Any]) -> Dict[str, Any]:
+    query_keywords = set(_extract_keywords(content, limit=12))
+    if not query_keywords:
+        return brief
+
+    def _is_related(text: str) -> bool:
+        return bool(query_keywords.intersection(_extract_keywords(text, limit=12)))
+
+    highlights = [str(h) for h in (brief.get("highlights") or []) if _is_related(str(h))]
+    facts: Dict[str, List[str]] = {}
+    for key, values in (brief.get("facts") or {}).items():
+        key_text = str(key)
+        value_list = [str(v) for v in (values or [])]
+        kept_values = [v for v in value_list if _is_related(f"{key_text} {v}")]
+        if kept_values:
+            facts[key_text] = kept_values
+
+    if not highlights and not facts:
+        return brief
+
+    filtered = dict(brief)
+    filtered["highlights"] = highlights[:5]
+    filtered["facts"] = facts
+    filtered["count"] = len(highlights)
+    return filtered
+
+
+def _build_openclaw_prompt(content: str, brief: Dict[str, Any], *, teaching_mode: bool) -> str:
+    lines: List[str] = []
+    lowered = (content or "").lower()
+    concept_transfer_mode = teaching_mode or any(
+        marker in lowered
+        for marker in ["教学", "教學", "teach", "challenge", "quiz", "暗號", "暗号", "secret code"]
+    )
+
+    if concept_transfer_mode:
+        lines.append("你现在只做一件事：围绕当前概念进行教学或复述，确保回答紧扣主题。")
+        lines.append("禁止讨论你的身份、背景真实性、是否在扮演角色，也不要输出拒绝扮演类声明。")
+        lines.append("若信息不足，只允许提出一个与当前概念直接相关的澄清问题。")
+    else:
+        lines.append("请基于用户问题与已召回记忆，给出聚焦、可执行、不跑题的回答。")
+
+    lines.append("输出要求：")
+    lines.append("1) 先给结论，再给2-5条关键点。")
+    lines.append("2) 仅使用与当前问题直接相关的信息。")
+    lines.append("3) 不要引入无关话题，不要扩展到其他历史任务。")
+    lines.append(f"原始消息:\n{content}")
+
+    highlights = brief.get("highlights", []) or []
+    facts = brief.get("facts", {}) or {}
+    if highlights:
+        lines.append("召回记忆片段:")
+        for item in highlights[:5]:
+            lines.append(f"- {item}")
+    if facts:
+        lines.append("召回事实:")
+        for key, values in list(facts.items())[:8]:
+            values_text = ", ".join(str(v) for v in values[:4])
+            lines.append(f"- {key}: {values_text}")
+
+    lines.append("请仅输出最终答案正文，不要输出分析过程。")
+    return "\n".join(lines)
+
+
+def _extract_json_object(raw_text: str) -> Dict[str, Any]:
+    text = (raw_text or "").strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("no_json_object")
+    return json.loads(text[start:end + 1])
+
+
+def _generate_openclaw_response(content: str, brief: Dict[str, Any], *, session_id: str, teaching_mode: bool) -> tuple[str, Dict[str, Any]]:
+    prompt = _build_openclaw_prompt(content, brief, teaching_mode=teaching_mode)
+    session_key = session_id.strip() or f"clawlink-{_state['agent_id']}-{uuid.uuid4().hex[:8]}"
+    timeout_seconds = int(os.getenv("CLAWLINK_OPENCLAW_TIMEOUT", "90"))
+    command = [
+        "openclaw",
+        "agent",
+        "--local",
+        "--session-id",
+        session_key,
+        "--json",
+        "--timeout",
+        str(timeout_seconds),
+        "-m",
+        prompt,
+    ]
+    proc = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout_seconds + 10,
+        check=False,
+    )
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"openclaw_exit_{proc.returncode}: {(proc.stderr or proc.stdout).strip()[:500]}")
+
+    payload_obj: Dict[str, Any] | None = None
+    for stream_text in (proc.stdout, proc.stderr):
+        if not stream_text:
+            continue
+        try:
+            payload_obj = _extract_json_object(stream_text)
+            if isinstance(payload_obj, dict) and isinstance(payload_obj.get("payloads"), list):
+                break
+        except Exception:
+            continue
+
+    if not payload_obj or not payload_obj.get("payloads"):
+        raise RuntimeError("openclaw_invalid_json_payload")
+
+    payloads = payload_obj.get("payloads", [])
+    response_text = ""
+    for item in payloads:
+        text = (item or {}).get("text")
+        if text:
+            response_text = str(text).strip()
+            if response_text:
+                break
+
+    if not response_text:
+        raise RuntimeError("openclaw_empty_response")
+
+    meta = payload_obj.get("meta", {}) if isinstance(payload_obj, dict) else {}
+    return response_text, meta
+
+
 def _generate_response_text(content: str, facts: Dict[str, List[str]], brief_text: str) -> str:
     question = _extract_question_text(content)
     if not facts:
@@ -611,6 +782,8 @@ def _build_memory_from_message(
         rubric="importance-filtered-memory",
         score=importance,
         confidence=max(0.50, importance),
+        access_count=0,
+        version=1,
         concepts=concepts,
         transcript_highlights=[msg.content[:800]],
         status="passed" if importance >= 0.70 else "draft",
@@ -662,10 +835,14 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
     logger.info("Message from %s: %s", msg.sender_id, msg.content[:120])
     mentioned = group_rules.should_respond(msg.content, _state["agent_id"])
 
-    # Optional memory auto-capture: disabled by default, can be enabled globally
-    # in /memory/config or per-message with metadata.capture_memory=true.
+    # Determine if this is a teaching-loop message (always capture)
+    meta_msg_type = str(msg.metadata.get("message_type", "")).lower()
+    meta_role = str(msg.metadata.get("role", "")).lower()
+    is_teaching_content = meta_msg_type in ("teaching", "challenge") and meta_role == "student"
+
+    # Memory capture: always for teaching content, otherwise respect config
     capture_requested = bool(msg.metadata.get("capture_memory", False))
-    capture_enabled = bool(_state.get("auto_memory_capture", False)) or capture_requested
+    capture_enabled = is_teaching_content or bool(_state.get("auto_memory_capture", False)) or capture_requested
     memory_id = ""
     memory_captured = False
     importance = 0.0
@@ -682,14 +859,15 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
     if capture_enabled and msg.content.strip():
         store = _get_store()
         importance = _estimate_importance(msg.content, keywords, message_facts)
-        min_importance = float(_state.get("min_importance", 0.55))
+        # For teaching content, lower the threshold to ensure capture
+        min_importance = 0.0 if is_teaching_content else float(_state.get("min_importance", 0.55))
         if importance >= min_importance and keywords:
             query = " ".join(keywords[:4])
             if not _is_duplicate_memory(store, query=query, content=msg.content):
                 entry = _build_memory_from_message(
                     msg,
                     keywords=keywords,
-                    importance=importance,
+                    importance=max(importance, 0.7) if is_teaching_content else importance,
                     facts=message_facts,
                 )
                 memory_id = store.save(entry)
@@ -722,7 +900,38 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
 
         recall_query = query_candidates[0] if query_candidates else msg.content[:120]
         brief = _build_brief_from_entries(recall_query, recalled_memories)
-    response_text = _generate_response_text(msg.content, brief.get("facts", {}), brief.get("brief_text", ""))
+
+    response_source = "template"
+    response_text = ""
+    openclaw_meta: Dict[str, Any] = {}
+    openclaw_error = ""
+
+    use_openclaw = bool(msg.metadata.get("use_openclaw", _state.get("openclaw_enabled", True)))
+    require_openclaw = bool(msg.metadata.get("require_openclaw", _state.get("openclaw_required", True)))
+
+    if use_openclaw:
+        try:
+            brief_for_prompt = _filter_brief_for_prompt(msg.content, brief)
+            response_text, openclaw_meta = _generate_openclaw_response(
+                msg.content,
+                brief_for_prompt,
+                session_id=msg.session_id,
+                teaching_mode=is_teaching_content,
+            )
+            response_source = "openclaw"
+        except Exception as exc:
+            openclaw_error = str(exc)
+            logger.error("OpenClaw response failed: %s", openclaw_error)
+            if require_openclaw:
+                raise HTTPException(status_code=500, detail=f"openclaw_failed: {openclaw_error}")
+
+    if response_source != "openclaw":
+        # Fallback path (disabled when require_openclaw=True)
+        if is_teaching_content:
+            response_text = _generate_teaching_response(msg.content, brief)
+        else:
+            response_text = _generate_response_text(msg.content, brief.get("facts", {}), brief.get("brief_text", ""))
+
     response_facts = _extract_message_facts(
         response_text,
         _extract_keywords(response_text),
@@ -759,6 +968,9 @@ async def receive_message(msg: MessageIn) -> Dict[str, Any]:
         "memory_brief": brief,
         "response": response_text,
         "content": response_text,
+        "response_source": response_source,
+        "openclaw_meta": openclaw_meta,
+        "openclaw_error": openclaw_error,
     }
 
 
